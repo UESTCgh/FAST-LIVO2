@@ -95,7 +95,18 @@ find_package(catkin REQUIRED COMPONENTS
 
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
-find_package(OpenCV REQUIRED)
+
+set(CMAKE_IGNORE_PATH
+    /usr/local
+    /usr/local/include
+    /usr/local/lib
+    /usr/local/lib64
+)
+
+set(OpenCV_DIR "/usr/lib/x86_64-linux-gnu/cmake/opencv4")
+
+find_package(OpenCV 4.2.0 EXACT REQUIRED)
+
 find_package(Sophus REQUIRED)
 find_package(Boost REQUIRED COMPONENTS thread)
 
