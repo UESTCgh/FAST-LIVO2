@@ -12,6 +12,19 @@ which is included as part of this source code package.
 
 #include "vio.h"
 
+void VIOManager::setVIOQualityThresholds(int tracked_min,
+                                         int inlier_min,
+                                         double inlier_ratio_min,
+                                         double mean_err_max,
+                                         int max_iters)
+{
+  vio_tracked_min_       = tracked_min;
+  vio_inlier_min_        = inlier_min;
+  vio_inlier_ratio_min_  = inlier_ratio_min;
+  vio_mean_err_max_      = mean_err_max;
+  vio_max_iters_         = max_iters;
+}
+
 VIOManager::VIOManager()
 {
   // downSizeFilter.setLeafSize(0.2, 0.2, 0.2);
@@ -1513,7 +1526,11 @@ void VIOManager::updateStateInverse(cv::Mat img, int level)
 
     update_ekf_time += omp_get_wtime() - t3;
 
-    if (iteration == max_iterations || EKF_end) break; 
+    if (iteration == max_iterations || EKF_end) {
+      vio_iter_used_ = iteration + 1;
+      vio_last_error_ = last_error;   // last_error 是当前最优 error（每像素均值）
+      break;
+    }
   }
 }
 
@@ -1681,8 +1698,11 @@ void VIOManager::updateState(cv::Mat img, int level)
     }
 
     update_ekf_time += omp_get_wtime() - t3;
-
-    if (iteration == max_iterations || EKF_end) break;
+    if (iteration == max_iterations || EKF_end) {
+      vio_iter_used_ = iteration + 1;
+      vio_last_error_ = last_error;   // last_error 是当前最优 error（每像素均值）
+      break;
+    }
   }
   // if (state->inv_expo_time < 0.0)  {ROS_ERROR("reset expo time!!!!!!!!!!\n"); state->inv_expo_time = 0.0;}
 }
@@ -1808,6 +1828,61 @@ void VIOManager::processFrame(cv::Mat &img, vector<pointWithVar> &pg, const unor
   double t2 = omp_get_wtime();
 
   computeJacobianAndUpdateEKF(img);
+  int valid_tracked_cnt = 0;
+  int inlier_cnt = 0;
+  double sum_error = 0.0;
+
+  for (int i = 0; i < total_points; i++) {
+      // 统计总跟踪点数
+      valid_tracked_cnt++; 
+      
+      // 判定内点：当前的重投影/光度误差是否小于阈值
+      // 注意：visual_submap->errors 在 EKF 中被更新了
+      if (visual_submap->errors[i] < outlier_threshold * patch_size_total) { 
+          inlier_cnt++;
+          sum_error += visual_submap->errors[i];
+      }
+  }
+
+  // 更新 vio_quality_
+  vio_quality_.tracked = valid_tracked_cnt;
+  vio_quality_.inliers = inlier_cnt;
+  vio_quality_.inlier_ratio = (valid_tracked_cnt > 0) ? (double)inlier_cnt / valid_tracked_cnt : 0.0;
+  if (inlier_cnt > 0) {
+    double mean_mse = sum_error / (inlier_cnt * patch_size_total); // 除以点数，再除以Patch像素数
+    vio_quality_.mean_err = std::sqrt(mean_mse); // 开根号得到 RMSE (例如 11.5)
+  } else {
+      vio_quality_.mean_err = 1000.0;
+  }
+  vio_quality_.iters = vio_iter_used_;
+  vio_quality_.degenerate = false;
+
+  // ----------------- VIO degeneracy check -----------------
+  if (total_points == 0)
+  {
+    vio_quality_.degenerate = true;
+  }
+  else
+  {
+    if (vio_quality_.tracked < vio_tracked_min_)
+      vio_quality_.degenerate = true;
+
+    if (vio_quality_.inliers < vio_inlier_min_)
+      vio_quality_.degenerate = true;
+
+    if (vio_quality_.inlier_ratio < vio_inlier_ratio_min_)
+      vio_quality_.degenerate = true;
+
+    // mean_err：每点 patch_error 的均值
+    // 如果你更信任 vio_last_error_（像素均值），可以替换这一行
+    if (vio_quality_.mean_err > vio_mean_err_max_)
+      vio_quality_.degenerate = true;
+
+    // 可选：迭代没收敛 + 质量不好
+    if (vio_quality_.iters >= vio_max_iters_ &&
+        vio_quality_.inlier_ratio < vio_inlier_ratio_min_)
+      vio_quality_.degenerate = true;
+  }
 
   double t3 = omp_get_wtime();
 
@@ -1816,57 +1891,61 @@ void VIOManager::processFrame(cv::Mat &img, vector<pointWithVar> &pg, const unor
   double t4 = omp_get_wtime();
   
   plotTrackedPoints();
+  if(!vio_quality_.degenerate){
 
-  if (plot_flag) projectPatchFromRefToCur(feat_map);
+    if (plot_flag) projectPatchFromRefToCur(feat_map);
 
-  double t5 = omp_get_wtime();
+    double t5 = omp_get_wtime();
 
-  updateVisualMapPoints(img);
+    updateVisualMapPoints(img);
 
-  double t6 = omp_get_wtime();
+    double t6 = omp_get_wtime();
 
-  updateReferencePatch(feat_map);
+    updateReferencePatch(feat_map);
 
-  double t7 = omp_get_wtime();
+    double t7 = omp_get_wtime();
+    
+    if(colmap_output_en)  dumpDataForColmap();
+
+    frame_count++;
+    ave_total = ave_total * (frame_count - 1) / frame_count + (t7 - t1 - (t5 - t4)) / frame_count;
+
+    // printf("[ VIO ] feat_map.size(): %zu\n", feat_map.size());
+    // printf("\033[1;32m[ VIO time ]: current frame: retrieveFromVisualSparseMap time: %.6lf secs.\033[0m\n", t2 - t1);
+    // printf("\033[1;32m[ VIO time ]: current frame: computeJacobianAndUpdateEKF time: %.6lf secs, comp H: %.6lf secs, ekf: %.6lf secs.\033[0m\n", t3 - t2, computeH, ekf_time);
+    // printf("\033[1;32m[ VIO time ]: current frame: generateVisualMapPoints time: %.6lf secs.\033[0m\n", t4 - t3);
+    // printf("\033[1;32m[ VIO time ]: current frame: updateVisualMapPoints time: %.6lf secs.\033[0m\n", t6 - t5);
+    // printf("\033[1;32m[ VIO time ]: current frame: updateReferencePatch time: %.6lf secs.\033[0m\n", t7 - t6);
+    // printf("\033[1;32m[ VIO time ]: current total time: %.6lf, average total time: %.6lf secs.\033[0m\n", t7 - t1 - (t5 - t4), ave_total);
+
+    // ave_build_residual_time = ave_build_residual_time * (frame_count - 1) / frame_count + (t2 - t1) / frame_count;
+    // ave_ekf_time = ave_ekf_time * (frame_count - 1) / frame_count + (t3 - t2) / frame_count;
   
-  if(colmap_output_en)  dumpDataForColmap();
-
-  frame_count++;
-  ave_total = ave_total * (frame_count - 1) / frame_count + (t7 - t1 - (t5 - t4)) / frame_count;
-
-  // printf("[ VIO ] feat_map.size(): %zu\n", feat_map.size());
-  // printf("\033[1;32m[ VIO time ]: current frame: retrieveFromVisualSparseMap time: %.6lf secs.\033[0m\n", t2 - t1);
-  // printf("\033[1;32m[ VIO time ]: current frame: computeJacobianAndUpdateEKF time: %.6lf secs, comp H: %.6lf secs, ekf: %.6lf secs.\033[0m\n", t3 - t2, computeH, ekf_time);
-  // printf("\033[1;32m[ VIO time ]: current frame: generateVisualMapPoints time: %.6lf secs.\033[0m\n", t4 - t3);
-  // printf("\033[1;32m[ VIO time ]: current frame: updateVisualMapPoints time: %.6lf secs.\033[0m\n", t6 - t5);
-  // printf("\033[1;32m[ VIO time ]: current frame: updateReferencePatch time: %.6lf secs.\033[0m\n", t7 - t6);
-  // printf("\033[1;32m[ VIO time ]: current total time: %.6lf, average total time: %.6lf secs.\033[0m\n", t7 - t1 - (t5 - t4), ave_total);
-
-  // ave_build_residual_time = ave_build_residual_time * (frame_count - 1) / frame_count + (t2 - t1) / frame_count;
-  // ave_ekf_time = ave_ekf_time * (frame_count - 1) / frame_count + (t3 - t2) / frame_count;
- 
-  // cout << BLUE << "ave_build_residual_time: " << ave_build_residual_time << RESET << endl;
-  // cout << BLUE << "ave_ekf_time: " << ave_ekf_time << RESET << endl;
-  
-  printf("\033[1;34m+-------------------------------------------------------------+\033[0m\n");
-  printf("\033[1;34m|                         VIO Time                            |\033[0m\n");
-  printf("\033[1;34m+-------------------------------------------------------------+\033[0m\n");
-  printf("\033[1;34m| %-29s | %-27zu |\033[0m\n", "Sparse Map Size", feat_map.size());
-  printf("\033[1;34m+-------------------------------------------------------------+\033[0m\n");
-  printf("\033[1;34m| %-29s | %-27s |\033[0m\n", "Algorithm Stage", "Time (secs)");
-  printf("\033[1;34m+-------------------------------------------------------------+\033[0m\n");
-  printf("\033[1;32m| %-29s | %-27lf |\033[0m\n", "retrieveFromVisualSparseMap", t2 - t1);
-  printf("\033[1;32m| %-29s | %-27lf |\033[0m\n", "computeJacobianAndUpdateEKF", t3 - t2);
-  printf("\033[1;32m| %-27s   | %-27lf |\033[0m\n", "-> computeJacobian", compute_jacobian_time);
-  printf("\033[1;32m| %-27s   | %-27lf |\033[0m\n", "-> updateEKF", update_ekf_time);
-  printf("\033[1;32m| %-29s | %-27lf |\033[0m\n", "generateVisualMapPoints", t4 - t3);
-  printf("\033[1;32m| %-29s | %-27lf |\033[0m\n", "updateVisualMapPoints", t6 - t5);
-  printf("\033[1;32m| %-29s | %-27lf |\033[0m\n", "updateReferencePatch", t7 - t6);
-  printf("\033[1;34m+-------------------------------------------------------------+\033[0m\n");
-  printf("\033[1;32m| %-29s | %-27lf |\033[0m\n", "Current Total Time", t7 - t1 - (t5 - t4));
-  printf("\033[1;32m| %-29s | %-27lf |\033[0m\n", "Average Total Time", ave_total);
-  printf("\033[1;34m+-------------------------------------------------------------+\033[0m\n");
-
+    // cout << BLUE << "ave_build_residual_time: " << ave_build_residual_time << RESET << endl;
+    // cout << BLUE << "ave_ekf_time: " << ave_ekf_time << RESET << endl;
+    
+    printf("\033[1;34m+-------------------------------------------------------------+\033[0m\n");
+    printf("\033[1;34m|                         VIO Time                            |\033[0m\n");
+    printf("\033[1;34m+-------------------------------------------------------------+\033[0m\n");
+    printf("\033[1;34m| %-29s | %-27zu |\033[0m\n", "Sparse Map Size", feat_map.size());
+    printf("\033[1;34m+-------------------------------------------------------------+\033[0m\n");
+    printf("\033[1;34m| %-29s | %-27s |\033[0m\n", "Algorithm Stage", "Time (secs)");
+    printf("\033[1;34m+-------------------------------------------------------------+\033[0m\n");
+    printf("\033[1;32m| %-29s | %-27lf |\033[0m\n", "retrieveFromVisualSparseMap", t2 - t1);
+    printf("\033[1;32m| %-29s | %-27lf |\033[0m\n", "computeJacobianAndUpdateEKF", t3 - t2);
+    printf("\033[1;32m| %-27s   | %-27lf |\033[0m\n", "-> computeJacobian", compute_jacobian_time);
+    printf("\033[1;32m| %-27s   | %-27lf |\033[0m\n", "-> updateEKF", update_ekf_time);
+    printf("\033[1;32m| %-29s | %-27lf |\033[0m\n", "generateVisualMapPoints", t4 - t3);
+    printf("\033[1;32m| %-29s | %-27lf |\033[0m\n", "updateVisualMapPoints", t6 - t5);
+    printf("\033[1;32m| %-29s | %-27lf |\033[0m\n", "updateReferencePatch", t7 - t6);
+    printf("\033[1;34m+-------------------------------------------------------------+\033[0m\n");
+    printf("\033[1;32m| %-29s | %-27lf |\033[0m\n", "Current Total Time", t7 - t1 - (t5 - t4));
+    printf("\033[1;32m| %-29s | %-27lf |\033[0m\n", "Average Total Time", ave_total);
+    printf("\033[1;34m+-------------------------------------------------------------+\033[0m\n");
+  }
+  else{
+    printf("\033[1;34mSkip VIO Update!!!\033[0m\n");
+  }
   // std::string text = std::to_string(int(1 / (t7 - t1 - (t5 - t4)))) + " HZ";
   // cv::Point2f origin;
   // origin.x = 20;

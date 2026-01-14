@@ -23,6 +23,18 @@ which is included as part of this source code package.
 #include <vikit/vision.h>
 #include <vikit/pinhole_camera.h>
 
+struct VioQuality {
+  int tracked = 0;        // total_points
+  int inliers = 0;        // errors <= propa_errors
+  double inlier_ratio = 0.0;
+  double mean_err = 0.0;  // mean patch error (per point)
+  double rmse = 0.0;      // sqrt(mean_err)
+  int iters = 0;          // 实际迭代次数（我们从 updateState/updateStateInverse 里回传）
+  bool degenerate = false;
+};
+
+
+
 struct SubSparseMap
 {
   vector<float> propa_errors;
@@ -131,6 +143,12 @@ public:
   FramePtr new_frame_;
   cv::Mat img_cp, img_rgb, img_test;
 
+  int vio_iter_used_ = 0;
+  double vio_last_error_ = 0.0;
+
+  VioQuality vio_quality_;
+  bool vio_last_ok_ = true;   // 可选：把本帧是否ok记录下来，供外部判断
+
   enum CellType
   {
     TYPE_MAP = 1,
@@ -170,6 +188,11 @@ public:
   double calculateNCC(float *ref_patch, float *cur_patch, int patch_size);
   int getBestSearchLevel(const Matrix2d &A_cur_ref, const int max_level);
   V3F getInterpolatedPixel(cv::Mat img, V2D pc);
+  void setVIOQualityThresholds(int tracked_min,
+                             int inlier_min,
+                             double inlier_ratio_min,
+                             double mean_err_max,
+                             int max_iters);
   
   // void resetRvizDisplay();
   // deque<VisualPoint *> map_cur_frame;
@@ -181,6 +204,13 @@ public:
 
   // PointCloudXYZI::Ptr pg_down;
   // pcl::VoxelGrid<PointType> downSizeFilter;
+private:
+  // VIO quality thresholds (set by LIVMapper)
+  int    vio_tracked_min_        = 60;
+  int    vio_inlier_min_         = 40;
+  double vio_inlier_ratio_min_  = 0.5;
+  double vio_mean_err_max_      = 10.0;
+  int    vio_max_iters_         = 10;
 };
 typedef std::shared_ptr<VIOManager> VIOManagerPtr;
 

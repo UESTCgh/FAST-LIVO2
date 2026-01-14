@@ -90,3 +90,18 @@ pcd_save:
 image_save:
   img_save_en: false
   interval: 1
+
+# 新增配置
+vio_quality:
+  tracked_min: 60
+  inlier_min: 40
+  inlier_ratio_min: 0.5
+  mean_err_max: 10.0
+  max_iters: 10
+
+lio_quality:
+  eff_min: 80
+  mean_abs_max: 0.30
+  rmse_max: 0.50
+  min_eig_min: 1.0e-6
+  cond_max: 1.0e10
