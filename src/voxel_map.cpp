@@ -400,9 +400,38 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
     {
       total_residual += fabs(ptpl_list_[i].dis_to_plane_);
     }
+    // effct_feat_num_ = ptpl_list_.size();
+    // cout << "[ LIO ] Raw feature num: " << feats_undistort_->size() << ", downsampled feature num:" << feats_down_size_ 
+    //      << " effective feature num: " << effct_feat_num_ << " average residual: " << total_residual / effct_feat_num_ << endl;
+
     effct_feat_num_ = ptpl_list_.size();
-    cout << "[ LIO ] Raw feature num: " << feats_undistort_->size() << ", downsampled feature num:" << feats_down_size_ 
-         << " effective feature num: " << effct_feat_num_ << " average residual: " << total_residual / effct_feat_num_ << endl;
+
+    double sum_abs = 0.0;
+    double sum_sq  = 0.0;
+    double max_abs = 0.0;
+
+    for (int i = 0; i < effct_feat_num_; i++)
+    {
+      double r = ptpl_list_[i].dis_to_plane_;
+      double ar = std::abs(r);
+      sum_abs += ar;
+      sum_sq  += r * r;
+      if (ar > max_abs) max_abs = ar;
+    }
+
+    lio_quality_.eff = effct_feat_num_;
+    if (effct_feat_num_ > 0)
+    {
+      lio_quality_.mean_abs_res = sum_abs / effct_feat_num_;
+      lio_quality_.rmse_res     = std::sqrt(sum_sq / effct_feat_num_);
+      lio_quality_.max_abs_res  = max_abs;
+    }
+    else
+    {
+      lio_quality_.mean_abs_res = 1e9;
+      lio_quality_.rmse_res = 1e9;
+      lio_quality_.max_abs_res = 1e9;
+    }
 
     /*** Computation of Measuremnt Jacobian matrix H and measurents covarience
      * ***/
@@ -464,6 +493,24 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
     auto &&HTz = Hsub_T_R_inv * meas_vec;
     // fout_dbg<<"HTz: "<<HTz<<endl;
     H_T_H.block<6, 6>(0, 0) = Hsub_T_R_inv * Hsub;
+    Eigen::Matrix<double,6,6> Info = H_T_H.block<6,6>(0,0);
+
+    Info = 0.5 * (Info + Info.transpose());
+
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<double,6,6>> es(Info);
+    auto eig = es.eigenvalues(); // 升序
+    double min_eig = eig(0);
+    double max_eig = eig(5);
+
+    lio_quality_.min_eig = min_eig;
+    lio_quality_.max_eig = max_eig;
+    lio_quality_.cond = (min_eig > 1e-12) ? (max_eig / min_eig) : 1e18;
+
+    // 阈值需要数据集调
+    // 1) min_eig太小：观测退化
+    // 2) cond太大：病态
+    lio_quality_.degenerate = (min_eig < 1e-6) || (lio_quality_.cond > 1e10);
+
     // EigenSolver<Matrix<double, 6, 6>> es(H_T_H.block<6,6>(0,0));
     MD(DIM_STATE, DIM_STATE) &&K_1 = (H_T_H.block<DIM_STATE, DIM_STATE>(0, 0) + state_.cov.block<DIM_STATE, DIM_STATE>(0, 0).inverse()).inverse();
     G.block<DIM_STATE, 6>(0, 0) = K_1.block<DIM_STATE, 6>(0, 0) * H_T_H.block<6, 6>(0, 0);
@@ -496,6 +543,7 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
       // VD(DIM_STATE) P_diag = _state.cov.diagonal();
       EKF_stop_flg = true;
     }
+    lio_quality_.iters = iterCount + 1;
     if (EKF_stop_flg) break;
   }
 

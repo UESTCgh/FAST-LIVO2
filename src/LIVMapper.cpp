@@ -113,6 +113,12 @@ void LIVMapper::readParameters(ros::NodeHandle &nh)
   nh.param<bool>("publish/pub_effect_point_en", pub_effect_point_en, false);
   nh.param<bool>("publish/dense_map_en", dense_map_en, false);
 
+  nh.param<int>   ("lio_quality/eff_min",      th_eff_min_,      80);
+  nh.param<double>("lio_quality/mean_abs_max", th_mean_abs_max_, 0.30);
+  nh.param<double>("lio_quality/rmse_max",     th_rmse_max_,     0.50);
+  nh.param<double>("lio_quality/min_eig_min",  th_min_eig_min_,  1e-6);
+  nh.param<double>("lio_quality/cond_max",     th_cond_max_,     1e10);
+
   p_pre->blind_sqr = p_pre->blind * p_pre->blind;
 }
 
@@ -367,9 +373,44 @@ void LIVMapper::handleLIO()
 
   double t1 = omp_get_wtime();
 
+  StatesGroup state_backup = _state;
+
   voxelmap_manager->StateEstimation(state_propagat);
-  _state = voxelmap_manager->state_;
-  _pv_list = voxelmap_manager->pv_list_;
+
+  const auto& q = voxelmap_manager->lio_quality_;
+
+  bool lio_ok = true;
+  lio_ok &= (q.eff >= th_eff_min_);
+  lio_ok &= (q.mean_abs_res <= th_mean_abs_max_);
+  // 可选项按需启用：
+  lio_ok &= (q.rmse_res <= th_rmse_max_);
+  lio_ok &= (q.min_eig >= th_min_eig_min_);
+  lio_ok &= (q.cond <= th_cond_max_);
+  lio_ok &= (!q.degenerate);
+
+  if(!lio_ok) {
+    printf(
+      "[LIO_QUALITY] eff=%d meanAbs=%.4f rmse=%.4f maxAbs=%.4f "
+      "minEig=%.3e cond=%.3e deg=%d iters=%d | "
+      "TH eff>=%d meanAbs<=%.2f rmse<=%.2f minEig>=%.1e cond<=%.1e "
+      "=> lio_ok=%d\n",
+      q.eff, q.mean_abs_res, q.rmse_res, q.max_abs_res,
+      q.min_eig, q.cond, q.degenerate ? 1 : 0, q.iters,
+      th_eff_min_, th_mean_abs_max_, th_rmse_max_,
+      th_min_eig_min_, th_cond_max_,
+      lio_ok ? 1 : 0
+    );
+  }
+
+  if (lio_ok)
+  {
+    _state = voxelmap_manager->state_;
+    _pv_list = voxelmap_manager->pv_list_;
+  }
+  else
+  {
+    _state = state_backup;
+  }
 
   double t2 = omp_get_wtime();
 
@@ -421,7 +462,8 @@ void LIVMapper::handleLIO()
           (-point_crossmat) * _state.cov.block<3, 3>(0, 0) * (-point_crossmat).transpose() + _state.cov.block<3, 3>(3, 3);
     voxelmap_manager->pv_list_[i].var = var;
   }
-  voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
+  // voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
+  if (lio_ok) voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
   std::cout << "[ LIO ] Update Voxel Map" << std::endl;
   _pv_list = voxelmap_manager->pv_list_;
   
@@ -578,13 +620,12 @@ void LIVMapper::imu_prop_callback()
   
   if (p_imu->imu_need_init || !new_imu || !ekf_finish_once) { 
     ROS_WARN_STREAM(
-      "[EKF SKIP] "
-      << "imu_need_init=" << p_imu->imu_need_init << ", "
-      << "new_imu=" << new_imu << ", "
-      << "ekf_finish_once=" << ekf_finish_once
-  );
+        "[EKF SKIP] "
+        << "imu_need_init=" << p_imu->imu_need_init << ", "
+        << "new_imu=" << new_imu << ", "
+        << "ekf_finish_once=" << ekf_finish_once
+    );
     return; }
-  ROS_INFO("imu_prop_callback called");
 
   mtx_buffer_imu_prop.lock();
   new_imu = false; // 控制propagate频率和IMU频率一致

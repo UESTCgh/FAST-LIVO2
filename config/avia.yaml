@@ -25,6 +25,7 @@ preprocess:
   lidar_type: 1 # Livox Avia LiDAR
   scan_line: 6
   blind: 0.8
+  feature_extract_enabled: true
 
 vio:
   max_iterations: 5
@@ -64,6 +65,7 @@ local_map:
 uav:
   imu_rate_odom: false
   gravity_align_en: false
+  imu_rate_odom: true
 
 publish:
   dense_map_en: true
