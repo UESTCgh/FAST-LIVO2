@@ -183,5 +183,13 @@ public:
   double aver_time_icp = 0;
   double aver_time_map_inre = 0;
   bool colmap_output_en = false;
+
+  // ========== thresholds ==========
+  int    th_eff_min_      = 80;
+  double th_mean_abs_max_ = 0.30;
+  double th_rmse_max_     = 0.50;
+  double th_min_eig_min_  = 1e-6;
+  double th_cond_max_     = 1e10;
+  // ================================
 };
 #endif
