@@ -40,6 +40,12 @@ LIVMapper::LIVMapper(ros::NodeHandle &nh)
   vio_manager.reset(new VIOManager());
   root_dir = ROOT_DIR;
   initializeFiles();
+  vio_manager->setVIOQualityThresholds(
+    vio_tracked_min_,
+    vio_inlier_min_,
+    vio_inlier_ratio_min_,
+    vio_mean_err_max_,
+    vio_max_iters_);
   initializeComponents();
   path.header.stamp = ros::Time::now();
   path.header.frame_id = "camera_init";
@@ -113,11 +119,18 @@ void LIVMapper::readParameters(ros::NodeHandle &nh)
   nh.param<bool>("publish/pub_effect_point_en", pub_effect_point_en, false);
   nh.param<bool>("publish/dense_map_en", dense_map_en, false);
 
+  // config thresholds
   nh.param<int>   ("lio_quality/eff_min",      th_eff_min_,      80);
   nh.param<double>("lio_quality/mean_abs_max", th_mean_abs_max_, 0.30);
   nh.param<double>("lio_quality/rmse_max",     th_rmse_max_,     0.50);
   nh.param<double>("lio_quality/min_eig_min",  th_min_eig_min_,  1e-6);
   nh.param<double>("lio_quality/cond_max",     th_cond_max_,     1e10);
+
+  nh.param<int>   ("vio_quality/tracked_min",      vio_tracked_min_,      60);
+  nh.param<int>   ("vio_quality/inlier_min",       vio_inlier_min_,       40);
+  nh.param<double>("vio_quality/inlier_ratio_min", vio_inlier_ratio_min_, 0.5);
+  nh.param<double>("vio_quality/mean_err_max",     vio_mean_err_max_,     10.0);
+  nh.param<int>   ("vio_quality/max_iters",        vio_max_iters_,        10);
 
   p_pre->blind_sqr = p_pre->blind * p_pre->blind;
 }
@@ -308,7 +321,28 @@ void LIVMapper::handleVIO()
     vio_manager->plot_flag = false;
   }
 
+  StatesGroup state_backup = _state;
   vio_manager->processFrame(LidarMeasures.measures.back().img, _pv_list, voxelmap_manager->voxel_map_, LidarMeasures.last_lio_update_time - _first_lidar_time);
+  const auto& vq = vio_manager->vio_quality_;
+
+  bool vio_ok = true;
+  vio_ok &= (vq.tracked >= vio_tracked_min_);
+  vio_ok &= (vq.inliers >= vio_inlier_min_);
+  vio_ok &= (vq.inlier_ratio >= vio_inlier_ratio_min_);
+  vio_ok &= (vq.mean_err <= vio_mean_err_max_);
+  vio_ok &= (vq.iters <= vio_max_iters_);   // 可选
+  vio_ok &= (!vq.degenerate);
+
+  if (!vio_ok) {
+    printf(
+      "[VIO_QUALITY] tracked=%d inliers=%d ratio=%.2f meanErr=%.3e rmse=%.3e iters=%d deg=%d | "
+      "TH tracked>=%d inliers>=%d ratio>=%.2f meanErr<=%.3e iters<=%d => vio_ok=%d\n",
+      vq.tracked, vq.inliers, vq.inlier_ratio, vq.mean_err, vq.rmse, vq.iters, vq.degenerate ? 1 : 0,
+      vio_tracked_min_, vio_inlier_min_, vio_inlier_ratio_min_, vio_mean_err_max_, vio_max_iters_,
+      vio_ok ? 1 : 0
+    );
+    _state = state_backup;
+  }
 
   if (imu_prop_enable) 
   {
