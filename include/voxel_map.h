@@ -32,6 +32,20 @@ which is included as part of this source code package.
 
 static int voxel_plane_id = 0;
 
+struct LioQuality {
+  int eff = 0;                 // effct_feat_num_
+  double mean_abs_res = 0.0;   // 平均|残差|
+  double rmse_res = 0.0;       // RMSE
+  double max_abs_res = 0.0;
+
+  double min_eig = 0.0;        // 信息矩阵最小特征值
+  double max_eig = 0.0;
+  double cond = 0.0;           // max/min
+  bool degenerate = false;
+
+  int iters = 0;               // 实际迭代次数
+};
+
 typedef struct VoxelMapConfig
 {
   double max_voxel_size_;
@@ -216,6 +230,9 @@ public:
   std::vector<M3D> body_cov_list_;
   std::vector<pointWithVar> pv_list_;
   std::vector<PointToPlane> ptpl_list_;
+
+  // quality
+  LioQuality lio_quality_;
 
   VoxelMapManager(VoxelMapConfig &config_setting, std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &voxel_map)
       : config_setting_(config_setting), voxel_map_(voxel_map)

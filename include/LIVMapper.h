@@ -183,5 +183,20 @@ public:
   double aver_time_icp = 0;
   double aver_time_map_inre = 0;
   bool colmap_output_en = false;
+
+  // LIO quality thresholds
+  int    th_eff_min_      = 80;
+  double th_mean_abs_max_ = 0.30;
+  double th_rmse_max_     = 0.50;
+  double th_min_eig_min_  = 1e-6;
+  double th_cond_max_     = 1e10;
+
+  // VIO quality thresholds
+  int    vio_tracked_min_   = 60;     // tracked features/patches
+  int    vio_inlier_min_    = 40;     // inliers after outlier rejection
+  double vio_inlier_ratio_min_ = 0.5; // inlier / tracked
+  double vio_mean_err_max_  = 10.0;   // reprojection/photometric mean error (depends on your definition)
+  int    vio_max_iters_     = 10;     // fail if too many iters (optional)
+
 };
 #endif
