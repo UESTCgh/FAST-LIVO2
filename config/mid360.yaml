@@ -2,6 +2,7 @@ common:
   img_topic: "/synced_image"
   lid_topic: "/synced_lidar"
   imu_topic: "/livox/imu"
+  propgrate_topic: "/vins_fusion/imu_propagate"
   img_en: 1
   lidar_en: 1
   ros_driver_bug_fix: false
