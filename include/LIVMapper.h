@@ -69,7 +69,7 @@ public:
   std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> voxel_map;
   
   string root_dir;
-  string lid_topic, imu_topic, seq_name, img_topic;
+  string lid_topic, imu_topic, seq_name, img_topic ,prograte_topic;
   V3D extT;
   M3D extR;
 
