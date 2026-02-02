@@ -40,7 +40,7 @@ public:
   
   bool sync_packages(LidarMeasureGroup &meas);
   void prop_imu_once(StatesGroup &imu_prop_state, const double dt, V3D acc_avr, V3D angvel_avr);
-  void imu_prop_callback();
+  void imu_prop_callback(const ros::TimerEvent &e);
   void transformLidar(const Eigen::Matrix3d rot, const Eigen::Vector3d t, const PointCloudXYZI::Ptr &input_cloud, PointCloudXYZI::Ptr &trans_cloud);
   void pointBodyToWorld(const PointType &pi, PointType &po);
   void RGBpointBodyLidarToIMU(PointType const *const pi, PointType *const po);
@@ -98,6 +98,7 @@ public:
   ros::Publisher pubImuPropOdom;
   double imu_time_offset = 0.0;
   double lidar_time_offset = 0.0;
+  int imu_publish_rate = 0;
 
   bool gravity_align_en = false, gravity_align_finished = false;
 
