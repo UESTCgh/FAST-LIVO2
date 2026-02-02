@@ -91,6 +91,8 @@ void LIVMapper::readParameters(ros::NodeHandle &nh)
   nh.param<bool>("imu/gravity_est_en", gravity_est_en, true);
   nh.param<bool>("imu/ba_bg_est_en", ba_bg_est_en, true);
 
+  nh.param<int>("imu/publish_rate", imu_publish_rate, 50);
+
   nh.param<double>("preprocess/blind", p_pre->blind, 0.01);
   nh.param<double>("preprocess/filter_size_surf", filter_size_surf_min, 0.5);
   nh.param<bool>("preprocess/hilti_en", hilti_en, false);
@@ -231,7 +233,7 @@ void LIVMapper::initializeSubscribersAndPublishers(ros::NodeHandle &nh, image_tr
   mavros_pose_publisher = nh.advertise<geometry_msgs::PoseStamped>("/mavros/vision_pose/pose", 10);
   pubImage = it.advertise("/rgb_img", 1);
   pubImuPropOdom = nh.advertise<nav_msgs::Odometry>("/LIVO2/imu_propagate", 10000);
-  // imu_prop_timer = nh.createTimer(ros::Duration(0.0004), &LIVMapper::imu_prop_callback, this);
+  imu_prop_timer = nh.createTimer(ros::Duration(1.0f/imu_publish_rate), &LIVMapper::imu_prop_callback, this);
   voxelmap_manager->voxel_map_pub_= nh.advertise<visualization_msgs::MarkerArray>("/planes", 10000);
 }
 
@@ -649,18 +651,9 @@ void LIVMapper::prop_imu_once(StatesGroup &imu_prop_state, const double dt, V3D 
   imu_prop_state.vel_end = imu_prop_state.vel_end + acc_imu * dt;
 }
 
-void LIVMapper::imu_prop_callback()
+void LIVMapper::imu_prop_callback(const ros::TimerEvent &e)
 {
-  
-  if (p_imu->imu_need_init || !new_imu || !ekf_finish_once) { 
-    ROS_WARN_STREAM(
-        "[EKF SKIP] "
-        << "imu_need_init=" << p_imu->imu_need_init << ", "
-        << "new_imu=" << new_imu << ", "
-        << "ekf_finish_once=" << ekf_finish_once
-    );
-    return; }
-
+  if (p_imu->imu_need_init || !new_imu || !ekf_finish_once) { return; }
   mtx_buffer_imu_prop.lock();
   new_imu = false; // 控制propagate频率和IMU频率一致
   if (imu_prop_enable && !prop_imu_buffer.empty())
@@ -904,7 +897,6 @@ void LIVMapper::imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
     newest_imu = *msg;
     new_imu = true;
     mtx_buffer_imu_prop.unlock();
-    LIVMapper::imu_prop_callback();
   }
   sig_buffer.notify_all();
 }
