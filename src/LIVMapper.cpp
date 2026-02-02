@@ -701,6 +701,7 @@ void LIVMapper::imu_prop_callback()
     Eigen::Quaterniond q;
     posi = imu_propagate.pos_end;
     vel_i = imu_propagate.vel_end;
+    
     q = Eigen::Quaterniond(imu_propagate.rot_end);
     imu_prop_odom.header.frame_id = "world";
     imu_prop_odom.header.stamp = newest_imu.header.stamp;
@@ -714,6 +715,9 @@ void LIVMapper::imu_prop_callback()
     imu_prop_odom.twist.twist.linear.x = vel_i.x();
     imu_prop_odom.twist.twist.linear.y = vel_i.y();
     imu_prop_odom.twist.twist.linear.z = vel_i.z();
+    imu_prop_odom.twist.twist.angular.x = newest_imu.angular_velocity.x-imu_propagate.bias_g.x();
+    imu_prop_odom.twist.twist.angular.y = newest_imu.angular_velocity.y-imu_propagate.bias_g.y();
+    imu_prop_odom.twist.twist.angular.z = newest_imu.angular_velocity.z-imu_propagate.bias_g.z();
     pubImuPropOdom.publish(imu_prop_odom);
   }
   mtx_buffer_imu_prop.unlock();
