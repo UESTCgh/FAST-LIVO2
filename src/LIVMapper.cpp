@@ -416,15 +416,20 @@ void LIVMapper::handleLIO()
 
   const auto& q = voxelmap_manager->lio_quality_;
 
-  bool lio_ok = true;
-  lio_ok &= (q.eff >= th_eff_min_);
-  lio_ok &= (q.mean_abs_res <= th_mean_abs_max_);
-  // 可选项按需启用：
-  lio_ok &= (q.rmse_res <= th_rmse_max_);
-  lio_ok &= (q.min_eig >= th_min_eig_min_);
-  lio_ok &= (q.cond <= th_cond_max_);
-  lio_ok &= (!q.degenerate);
+  static int lio_frame_count = 0;
+  lio_frame_count++;
 
+  bool lio_ok = true;
+  if (lio_frame_count > 10) {
+    lio_ok &= (q.eff >= th_eff_min_);
+    lio_ok &= (q.mean_abs_res <= th_mean_abs_max_);
+    // 可选项按需启用：
+    lio_ok &= (q.rmse_res <= th_rmse_max_);
+    lio_ok &= (q.min_eig >= th_min_eig_min_);
+    lio_ok &= (q.cond <= th_cond_max_);
+    lio_ok &= (!q.degenerate);
+  }
+  
   if(!lio_ok) {
     printf(
       "[LIO_QUALITY] eff=%d meanAbs=%.4f rmse=%.4f maxAbs=%.4f "
@@ -439,15 +444,12 @@ void LIVMapper::handleLIO()
     );
   }
 
-  if (lio_ok)
-  {
-    _state = voxelmap_manager->state_;
-    _pv_list = voxelmap_manager->pv_list_;
+  if (lio_ok) {
+      _state = voxelmap_manager->state_;       // 接受 ICP 结果
+  } else {
+      _state = state_backup;                    // 状态回滚
   }
-  else
-  {
-    _state = state_backup;
-  }
+  _pv_list = voxelmap_manager->pv_list_;
 
   double t2 = omp_get_wtime();
 
@@ -500,8 +502,11 @@ void LIVMapper::handleLIO()
     voxelmap_manager->pv_list_[i].var = var;
   }
   // voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
-  if (lio_ok) voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
-  std::cout << "[ LIO ] Update Voxel Map" << std::endl;
+  if (lio_ok) 
+  {
+    voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
+    std::cout << "[ LIO ] Update Voxel Map" << std::endl;
+  }
   _pv_list = voxelmap_manager->pv_list_;
   
   double t4 = omp_get_wtime();
