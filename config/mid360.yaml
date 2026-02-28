@@ -74,6 +74,8 @@ publish:
   pub_plane_en: false
   pub_scan_num: 1
   blind_rgb_points: 0.0
+  cloud_360: true
+  cloud_body: false
 
 evo:
   seq_name: "CBD_Building_01"
