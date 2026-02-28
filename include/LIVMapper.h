@@ -53,6 +53,7 @@ public:
   void publish_frame_world(const ros::Publisher &pubLaserCloudFullRes, VIOManagerPtr vio_manager);
   void publish_visual_sub_map(const ros::Publisher &pubSubVisualMap);
   void publish_effect_world(const ros::Publisher &pubLaserCloudEffect, const std::vector<PointToPlane> &ptpl_list);
+  void publish_frame_body(const ros::Publisher& pub, double stamp_sec);
   void publish_odometry(const ros::Publisher &pubOdomAftMapped);
   void publish_mavros(const ros::Publisher &mavros_pose_publisher);
   void publish_path(const ros::Publisher pubPath);
@@ -105,7 +106,7 @@ public:
   bool sync_jump_flag = false;
 
   bool lidar_pushed = false, imu_en, gravity_est_en, flg_reset = false, ba_bg_est_en = true;
-  bool dense_map_en = false;
+  bool dense_map_en ,cloud_body_en= false, cloud_360_en=true;
   int img_en = 1, imu_int_frame = 3;
   bool normal_en = true;
   bool exposure_estimate_en = false;
@@ -179,6 +180,7 @@ public:
   image_transport::Publisher pubImage;
   ros::Publisher mavros_pose_publisher;
   ros::Timer imu_prop_timer;
+  ros::Publisher pubLaserCloudFull_body;
 
   int frame_num = 0;
   double aver_time_consu = 0;

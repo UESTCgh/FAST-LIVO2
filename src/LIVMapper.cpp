@@ -121,6 +121,8 @@ void LIVMapper::readParameters(ros::NodeHandle &nh)
   nh.param<int>("publish/pub_scan_num", pub_scan_num, 1);
   nh.param<bool>("publish/pub_effect_point_en", pub_effect_point_en, false);
   nh.param<bool>("publish/dense_map_en", dense_map_en, false);
+  nh.param<bool>("publish/cloud_360", cloud_360_en, true);
+  nh.param<bool>("publish/cloud_body", cloud_body_en, false);
 
   // config thresholds
   nh.param<int>   ("lio_quality/eff_min",      th_eff_min_,      80);
@@ -237,6 +239,7 @@ void LIVMapper::initializeSubscribersAndPublishers(ros::NodeHandle &nh, image_tr
   pubImuPropOdom = nh.advertise<nav_msgs::Odometry>(prograte_topic, 10000);
   imu_prop_timer = nh.createTimer(ros::Duration(1.0f/imu_publish_rate), &LIVMapper::imu_prop_callback, this);
   voxelmap_manager->voxel_map_pub_= nh.advertise<visualization_msgs::MarkerArray>("/planes", 10000);
+  pubLaserCloudFull_body = nh.advertise<sensor_msgs::PointCloud2>("/cloud_registered_body", 100000);
 }
 
 void LIVMapper::handleFirstFrame() 
@@ -369,6 +372,8 @@ void LIVMapper::handleVIO()
   // }
 
   publish_frame_world(pubLaserCloudFullRes, vio_manager);
+  const double t = LidarMeasures.measures.back().vio_time;
+  publish_frame_body(pubLaserCloudFull_body, t);
   publish_img_rgb(pubImage, vio_manager);
 
   euler_cur = RotMtoEuler(_state.rot_end);
@@ -527,8 +532,8 @@ void LIVMapper::handleLIO()
   }
   *pcl_w_wait_pub = *laserCloudWorld;
 
-  // Publish full 360° undistorted point cloud on a separate topic
-  if (slam_mode_ == LIVO)
+  // Publish full 360° undistorted point cloud
+  if (slam_mode_ == LIVO && pubLaserCloudFullRes360.getNumSubscribers() > 0 && cloud_360_en)
   {
     PointCloudXYZI::Ptr fullCloudWorld(new PointCloudXYZI());
     *fullCloudWorld = *laserCloudWorld;
@@ -549,6 +554,10 @@ void LIVMapper::handleLIO()
     pubLaserCloudFullRes360.publish(fullCloudMsg);
   }
 
+  if(cloud_body_en){
+    const double t = LidarMeasures.measures.back().lio_time;
+    publish_frame_body(pubLaserCloudFull_body, t);
+  }
   publish_frame_world(pubLaserCloudFullRes, vio_manager);
   if (pub_effect_point_en) publish_effect_world(pubLaserCloudEffect, voxelmap_manager->ptpl_list_);
   if (voxelmap_manager->config_setting_.is_pub_plane_map_) voxelmap_manager->pubVoxelMap();
@@ -1239,6 +1248,31 @@ void LIVMapper::publish_img_rgb(const image_transport::Publisher &pubImage, VIOM
   out_msg.image = img_rgb;
   pubImage.publish(out_msg.toImageMsg());
 }
+
+void LIVMapper::publish_frame_body(const ros::Publisher& pub, double stamp_sec)
+{
+  if (!feats_undistort || feats_undistort->empty()) return;
+
+  const int size = static_cast<int>(feats_undistort->points.size());
+
+  PointCloudXYZI::Ptr laserCloudIMUBody(new PointCloudXYZI());
+  laserCloudIMUBody->resize(size);
+
+  for (int i = 0; i < size; ++i)
+  {
+    // feats_undistort 点在 LiDAR frame（但已经 deskew），转换到 IMU body frame
+    RGBpointBodyLidarToIMU(&feats_undistort->points[i], &laserCloudIMUBody->points[i]);
+  }
+
+  sensor_msgs::PointCloud2 msg;
+  pcl::toROSMsg(*laserCloudIMUBody, msg);
+
+  msg.header.stamp = ros::Time().fromSec(stamp_sec);
+  msg.header.frame_id = "body";   // 点云所在坐标系：IMU body
+
+  pub.publish(msg);
+}
+
 
 // Provide output format for LiDAR-visual BA
 void LIVMapper::publish_frame_world(const ros::Publisher &pubLaserCloudFullRes, VIOManagerPtr vio_manager)
