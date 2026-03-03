@@ -26,6 +26,8 @@ which is included as part of this source code package.
 #include <unordered_map>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
+#include "utils/anderson_accel.h"
+
 
 #define VOXELMAP_HASH_P 116101
 #define VOXELMAP_MAX_N 10000000000
@@ -63,6 +65,11 @@ typedef struct VoxelMapConfig
   double sliding_thresh;
   bool map_sliding_en;
   int half_map_size;
+
+  // aa config
+  bool use_aa_;
+  int aa_m; 
+  double aa_lambda;
 } VoxelMapConfig;
 
 typedef struct PointToPlane
@@ -234,9 +241,15 @@ public:
   // quality
   LioQuality lio_quality_;
 
+  bool use_aa_ = true;
+  AndersonAccel aa_;   // or your aa type
+  
   VoxelMapManager(VoxelMapConfig &config_setting, std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &voxel_map)
       : config_setting_(config_setting), voxel_map_(voxel_map)
   {
+
+    use_aa_ = config_setting.use_aa_;
+    aa_ = AndersonAccel(AndersonAccel::Options(config_setting.aa_m, config_setting.aa_lambda));
     current_frame_id_ = 0;
     feats_undistort_.reset(new PointCloudXYZI());
     feats_down_body_.reset(new PointCloudXYZI());
