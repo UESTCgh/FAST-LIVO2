@@ -23,6 +23,7 @@ Panels:
         - /MarkerArray4
         - /MarkerArray5
         - /Image1
+        - /PointCloud25
       Splitter Ratio: 0.34272301197052
     Tree Height: 1127
   - Class: rviz/Selection
@@ -533,7 +534,7 @@ Visualization Manager:
       Color: 255; 255; 255
       Color Transformer: Intensity
       Decay Time: 0
-      Enabled: true
+      Enabled: false
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
@@ -548,7 +549,7 @@ Visualization Manager:
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
-      Value: true
+      Value: false
   Enabled: true
   Global Options:
     Background Color: 0; 0; 0
@@ -585,17 +586,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 0.002463817596435547
-        Y: -6.770412921905518
+        X: -1.224531650543213
+        Y: -4.068775653839111
         Z: -3.4865479392465204e-05
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.2397964000701904
+      Pitch: 0.7397966980934143
       Target Frame: drone
-      Yaw: 2.7967872619628906
+      Yaw: 2.566786527633667
     Saved:
       - Class: rviz/Orbit
         Distance: 117.53474426269531
