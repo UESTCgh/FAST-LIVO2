@@ -220,6 +220,7 @@ void LIVMapper::initializeSubscribersAndPublishers(ros::NodeHandle &nh, image_tr
   sub_img = nh.subscribe(img_topic, 200000, &LIVMapper::img_cbk, this);
   
   pubLaserCloudFullRes = nh.advertise<sensor_msgs::PointCloud2>("/cloud_registered", 100);
+  pubLaserCloudFullRes360 = nh.advertise<sensor_msgs::PointCloud2>("/cloud_registered_360", 100);
   pubNormal = nh.advertise<visualization_msgs::MarkerArray>("visualization_marker", 100);
   pubSubVisualMap = nh.advertise<sensor_msgs::PointCloud2>("/cloud_visual_sub_map_before", 100);
   pubLaserCloudEffect = nh.advertise<sensor_msgs::PointCloud2>("/cloud_effected", 100);
@@ -523,11 +524,27 @@ void LIVMapper::handleLIO()
   int size = laserCloudFullRes->points.size();
   PointCloudXYZI::Ptr laserCloudWorld(new PointCloudXYZI(size, 1));
 
-  for (int i = 0; i < size; i++) 
+  for (int i = 0; i < size; i++)
   {
     RGBpointBodyToWorld(&laserCloudFullRes->points[i], &laserCloudWorld->points[i]);
   }
   *pcl_w_wait_pub = *laserCloudWorld;
+
+  // Publish full 360° undistorted point cloud
+  if (slam_mode_ == LIVO && pubLaserCloudFullRes360.getNumSubscribers() > 0)
+  {
+    int full_size = feats_undistort->points.size();
+    PointCloudXYZI::Ptr fullCloudWorld(new PointCloudXYZI(full_size, 1));
+    for (int i = 0; i < full_size; i++)
+    {
+      RGBpointBodyToWorld(&feats_undistort->points[i], &fullCloudWorld->points[i]);
+    }
+    sensor_msgs::PointCloud2 fullCloudMsg;
+    pcl::toROSMsg(*fullCloudWorld, fullCloudMsg);
+    fullCloudMsg.header.stamp = ros::Time::now();
+    fullCloudMsg.header.frame_id = "camera_init";
+    pubLaserCloudFullRes360.publish(fullCloudMsg);
+  }
 
   publish_frame_world(pubLaserCloudFullRes, vio_manager);
   if (pub_effect_point_en) publish_effect_world(pubLaserCloudEffect, voxelmap_manager->ptpl_list_);
@@ -705,7 +722,7 @@ void LIVMapper::imu_prop_callback(const ros::TimerEvent &e)
     vel_i = imu_propagate.vel_end;
     
     q = Eigen::Quaterniond(imu_propagate.rot_end);
-    imu_prop_odom.header.frame_id = "world";
+    imu_prop_odom.header.frame_id = "camera_init";
     imu_prop_odom.header.stamp = newest_imu.header.stamp;
     imu_prop_odom.pose.pose.position.x = posi.x();
     imu_prop_odom.pose.pose.position.y = posi.y();
@@ -1272,8 +1289,8 @@ void LIVMapper::publish_frame_world(const ros::Publisher &pubLaserCloudFullRes, 
     pcl::toROSMsg(*laserCloudWorldRGB, laserCloudmsg);
   }
   if (slam_mode_ == ONLY_LIO || slam_mode_ == ONLY_LO)
-  { 
-    pcl::toROSMsg(*pcl_w_wait_pub, laserCloudmsg); 
+  {
+    pcl::toROSMsg(*pcl_w_wait_pub, laserCloudmsg);
   }
   laserCloudmsg.header.stamp = ros::Time::now(); //.fromSec(last_timestamp_lidar);
   laserCloudmsg.header.frame_id = "camera_init";

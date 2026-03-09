@@ -166,6 +166,7 @@ public:
   ros::Subscriber sub_imu;
   ros::Subscriber sub_img;
   ros::Publisher pubLaserCloudFullRes;
+  ros::Publisher pubLaserCloudFullRes360;
   ros::Publisher pubNormal;
   ros::Publisher pubSubVisualMap;
   ros::Publisher pubLaserCloudEffect;
