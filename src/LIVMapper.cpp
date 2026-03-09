@@ -220,6 +220,7 @@ void LIVMapper::initializeSubscribersAndPublishers(ros::NodeHandle &nh, image_tr
   sub_img = nh.subscribe(img_topic, 200000, &LIVMapper::img_cbk, this);
   
   pubLaserCloudFullRes = nh.advertise<sensor_msgs::PointCloud2>("/cloud_registered", 100);
+  pubLaserCloudFullRes360 = nh.advertise<sensor_msgs::PointCloud2>("/cloud_registered_360", 100);
   pubNormal = nh.advertise<visualization_msgs::MarkerArray>("visualization_marker", 100);
   pubSubVisualMap = nh.advertise<sensor_msgs::PointCloud2>("/cloud_visual_sub_map_before", 100);
   pubLaserCloudEffect = nh.advertise<sensor_msgs::PointCloud2>("/cloud_effected", 100);
@@ -520,11 +521,33 @@ void LIVMapper::handleLIO()
   int size = laserCloudFullRes->points.size();
   PointCloudXYZI::Ptr laserCloudWorld(new PointCloudXYZI(size, 1));
 
-  for (int i = 0; i < size; i++) 
+  for (int i = 0; i < size; i++)
   {
     RGBpointBodyToWorld(&laserCloudFullRes->points[i], &laserCloudWorld->points[i]);
   }
   *pcl_w_wait_pub = *laserCloudWorld;
+
+  // Publish full 360° undistorted point cloud on a separate topic
+  if (slam_mode_ == LIVO)
+  {
+    PointCloudXYZI::Ptr fullCloudWorld(new PointCloudXYZI());
+    *fullCloudWorld = *laserCloudWorld;
+    if (!LidarMeasures.pcl_proc_next->empty())
+    {
+      int next_size = LidarMeasures.pcl_proc_next->points.size();
+      PointCloudXYZI nextCloudWorld(next_size, 1);
+      for (int i = 0; i < next_size; i++)
+      {
+        RGBpointBodyToWorld(&LidarMeasures.pcl_proc_next->points[i], &nextCloudWorld.points[i]);
+      }
+      *fullCloudWorld += nextCloudWorld;
+    }
+    sensor_msgs::PointCloud2 fullCloudMsg;
+    pcl::toROSMsg(*fullCloudWorld, fullCloudMsg);
+    fullCloudMsg.header.stamp = ros::Time::now();
+    fullCloudMsg.header.frame_id = "camera_init";
+    pubLaserCloudFullRes360.publish(fullCloudMsg);
+  }
 
   publish_frame_world(pubLaserCloudFullRes, vio_manager);
   if (pub_effect_point_en) publish_effect_world(pubLaserCloudEffect, voxelmap_manager->ptpl_list_);
@@ -1269,8 +1292,8 @@ void LIVMapper::publish_frame_world(const ros::Publisher &pubLaserCloudFullRes, 
     pcl::toROSMsg(*laserCloudWorldRGB, laserCloudmsg);
   }
   if (slam_mode_ == ONLY_LIO || slam_mode_ == ONLY_LO)
-  { 
-    pcl::toROSMsg(*pcl_w_wait_pub, laserCloudmsg); 
+  {
+    pcl::toROSMsg(*pcl_w_wait_pub, laserCloudmsg);
   }
   laserCloudmsg.header.stamp = ros::Time::now(); //.fromSec(last_timestamp_lidar);
   laserCloudmsg.header.frame_id = "camera_init";
