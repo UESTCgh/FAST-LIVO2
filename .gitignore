@@ -1,2 +1,5 @@
 Log/*
 build/*
+Log/Colmap/sparse/0/points3D.txt
+Log/Colmap/sparse/0/cameras.txt
+Log/Colmap/sparse/0/cameras.txt

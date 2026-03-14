@@ -58,7 +58,7 @@ lio:
   layer_init_num: [5, 5, 5, 5, 5]
 
 local_map:  
-  map_sliding_en: false
+  map_sliding_en: true
   half_map_size: 100
   sliding_thresh: 8
 
@@ -72,15 +72,17 @@ publish:
   pub_plane_en: false
   pub_scan_num: 1
   blind_rgb_points: 0.0
+  cloud_360: true
+  cloud_body: false
 
 evo:
   seq_name: "CBD_Building_01"
   pose_output_en: false
 
 pcd_save:
-  pcd_save_en: false
+  pcd_save_en: true
   type: 0 # 0: World Frame, 1: Body Frame;
-  colmap_output_en: false # need to set interval = -1
+  colmap_output_en: true # need to set interval = -1
   filter_size_pcd: 0.15
   interval: -1
   # how many LiDAR frames saved in each pcd file;
@@ -104,3 +106,8 @@ lio_quality:
   rmse_max: 0.50
   min_eig_min: 1.0e-6
   cond_max: 1.0e10
+
+lio:
+  use_aa: true     # nh.param<bool>("lio/use_aa", ..., true)
+  aa_m: 5          # nh.param<int>("lio/aa_m", ..., 5)
+  aa_lambda: 1.0e-6  # nh.param<double>("lio/aa_lambda", ..., 1e-6)
