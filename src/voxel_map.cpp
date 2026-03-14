@@ -526,6 +526,18 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
     auto vec = state_propagat - state_;
     VD(DIM_STATE)
     solution = K_1.block<DIM_STATE, 6>(0, 0) * HTz + vec.block<DIM_STATE, 1>(0, 0) - G.block<DIM_STATE, 6>(0, 0) * vec.block<6, 1>(0, 0);
+
+    // 退化方向抑制
+    if (lio_quality_.degenerate) {
+      double deg_thresh = max_eig * 0.01;
+      for (int i = 0; i < 6; i++) {
+        if (eig(i) < deg_thresh) {
+          double scale = std::sqrt(eig(i) / deg_thresh);
+          solution(i) *= scale;
+        }
+      }
+    }
+
     int minRow, minCol;
     // state_ += solution;
     // ===== " with AA update =====
