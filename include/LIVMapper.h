@@ -188,6 +188,10 @@ public:
   double aver_time_map_inre = 0;
   bool colmap_output_en = false;
 
+  // degeneration detection enable
+  bool   lio_degen_en_    = false;
+  bool   vio_degen_en_    = false;
+
   // LIO quality thresholds
   int    th_eff_min_      = 80;
   double th_mean_abs_max_ = 0.30;

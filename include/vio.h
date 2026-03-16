@@ -204,6 +204,9 @@ public:
 
   // PointCloudXYZI::Ptr pg_down;
   // pcl::VoxelGrid<PointType> downSizeFilter;
+
+  bool degen_en_ = false;
+
 private:
   // VIO quality thresholds (set by LIVMapper)
   int    vio_tracked_min_        = 60;

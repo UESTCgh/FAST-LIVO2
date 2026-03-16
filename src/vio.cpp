@@ -1858,6 +1858,7 @@ void VIOManager::processFrame(cv::Mat &img, vector<pointWithVar> &pg, const unor
   vio_quality_.degenerate = false;
 
   // ----------------- VIO degeneracy check -----------------
+  if (degen_en_) {
   if (total_points == 0)
   {
     vio_quality_.degenerate = true;
@@ -1883,6 +1884,7 @@ void VIOManager::processFrame(cv::Mat &img, vector<pointWithVar> &pg, const unor
         vio_quality_.inlier_ratio < vio_inlier_ratio_min_)
       vio_quality_.degenerate = true;
   }
+  } // degen_en_
 
   double t3 = omp_get_wtime();
 

@@ -37,7 +37,9 @@ LIVMapper::LIVMapper(ros::NodeHandle &nh)
   pcl_wait_save.reset(new PointCloudXYZRGB());
   pcl_wait_save_intensity.reset(new PointCloudXYZI());
   voxelmap_manager.reset(new VoxelMapManager(voxel_config, voxel_map));
+  voxelmap_manager->degen_en_ = lio_degen_en_;
   vio_manager.reset(new VIOManager());
+  vio_manager->degen_en_ = vio_degen_en_;
   root_dir = ROOT_DIR;
   initializeFiles();
   vio_manager->setVIOQualityThresholds(
@@ -123,6 +125,11 @@ void LIVMapper::readParameters(ros::NodeHandle &nh)
   nh.param<bool>("publish/dense_map_en", dense_map_en, false);
   nh.param<bool>("publish/cloud_360", cloud_360_en, true);
   nh.param<bool>("publish/cloud_body", cloud_body_en, false);
+
+  // degeneration detection enable
+  nh.param<bool>("lio_quality/degen_en", lio_degen_en_, false);
+  nh.param<bool>("vio_quality/degen_en", vio_degen_en_, false);
+  printf("[DEGEN] lio_degen_en=%d, vio_degen_en=%d\n", lio_degen_en_, vio_degen_en_);
 
   // config thresholds
   nh.param<int>   ("lio_quality/eff_min",      th_eff_min_,      80);
@@ -333,12 +340,14 @@ void LIVMapper::handleVIO()
   const auto& vq = vio_manager->vio_quality_;
 
   bool vio_ok = true;
-  vio_ok &= (vq.tracked >= vio_tracked_min_);
-  vio_ok &= (vq.inliers >= vio_inlier_min_);
-  vio_ok &= (vq.inlier_ratio >= vio_inlier_ratio_min_);
-  vio_ok &= (vq.mean_err <= vio_mean_err_max_);
-  vio_ok &= (vq.iters <= vio_max_iters_);   // 可选
-  vio_ok &= (!vq.degenerate);
+  if (vio_degen_en_) {
+    vio_ok &= (vq.tracked >= vio_tracked_min_);
+    vio_ok &= (vq.inliers >= vio_inlier_min_);
+    vio_ok &= (vq.inlier_ratio >= vio_inlier_ratio_min_);
+    vio_ok &= (vq.mean_err <= vio_mean_err_max_);
+    vio_ok &= (vq.iters <= vio_max_iters_);   // 可选
+    vio_ok &= (!vq.degenerate);
+  }
 
   if (!vio_ok) {
     printf(
@@ -426,16 +435,18 @@ void LIVMapper::handleLIO()
   const auto& q = voxelmap_manager->lio_quality_;
 
   bool lio_ok = true;
-  if (lio_frame_count > 10) {
-    lio_ok &= (q.eff >= th_eff_min_);
-    lio_ok &= (q.mean_abs_res <= th_mean_abs_max_);
-    // 可选项按需启用：
-    lio_ok &= (q.rmse_res <= th_rmse_max_);
-    lio_ok &= (q.min_eig >= th_min_eig_min_);
-    lio_ok &= (q.cond <= th_cond_max_);
-    lio_ok &= (!q.degenerate);
-  }else{
-    lio_frame_count++;
+  if (lio_degen_en_) {
+    if (lio_frame_count > 10) {
+      lio_ok &= (q.eff >= th_eff_min_);
+      lio_ok &= (q.mean_abs_res <= th_mean_abs_max_);
+      // 可选项按需启用：
+      lio_ok &= (q.rmse_res <= th_rmse_max_);
+      lio_ok &= (q.min_eig >= th_min_eig_min_);
+      lio_ok &= (q.cond <= th_cond_max_);
+      lio_ok &= (!q.degenerate);
+    } else {
+      lio_frame_count++;
+    }
   }
   
   if(!lio_ok) {

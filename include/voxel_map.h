@@ -233,6 +233,7 @@ public:
 
   // quality
   LioQuality lio_quality_;
+  bool degen_en_ = false;
 
   VoxelMapManager(VoxelMapConfig &config_setting, std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &voxel_map)
       : config_setting_(config_setting), voxel_map_(voxel_map)

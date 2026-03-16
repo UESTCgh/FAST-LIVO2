@@ -58,7 +58,7 @@ lio:
   layer_init_num: [5, 5, 5, 5, 5]
 
 local_map:  
-  map_sliding_en: true
+  map_sliding_en: false
   half_map_size: 100
   sliding_thresh: 8
 
@@ -94,6 +94,7 @@ image_save:
 
 # 新增配置
 vio_quality:
+  degen_en: false
   tracked_min: 60
   inlier_min: 40
   inlier_ratio_min: 0.5
@@ -101,6 +102,7 @@ vio_quality:
   max_iters: 10
 
 lio_quality:
+  degen_en: false
   eff_min: 80
   mean_abs_max: 0.30
   rmse_max: 0.50
