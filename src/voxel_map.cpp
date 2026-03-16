@@ -46,9 +46,6 @@ void loadVoxelConfig(ros::NodeHandle &nh, VoxelMapConfig &voxel_config)
   nh.param<vector<int>>("lio/layer_init_num", voxel_config.layer_init_num_, vector<int>{5,5,5,5,5});
   nh.param<int>("lio/max_points_num", voxel_config.max_points_num_, 50);
   nh.param<int>("lio/max_iterations", voxel_config.max_iterations_, 5);
-  nh.param<bool>("lio/use_aa", voxel_config.use_aa_, true);
-  nh.param<int>("lio/aa_m", voxel_config.aa_m, 5);
-  nh.param<double>("lio/aa_lambda", voxel_config.aa_lambda, 1e-6);
 
   nh.param<bool>("local_map/map_sliding_en", voxel_config.map_sliding_en, false);
   nh.param<int>("local_map/half_map_size", voxel_config.half_map_size, 100);
@@ -372,12 +369,6 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
   I_STATE.setIdentity();
 
   bool flg_EKF_inited, flg_EKF_converged, EKF_stop_flg = 0;
-  // ===== AA init (like lightning) =====
-  StatesGroup start_state = state_;   // anchor of AA
-  StatesGroup last_state  = state_;   // for rollback
-  bool aa_inited = false;
-  double last_res = 1e18;             // use mean_abs_res as rollback metric
-  // ====================================
   for (int iterCount = 0; iterCount < config_setting_.max_iterations_; iterCount++)
   {
     double total_residual = 0.0;
@@ -539,37 +530,7 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
     }
 
     int minRow, minCol;
-    // state_ += solution;
-    // ===== " with AA update =====
-    last_state = state_;     // rollback point
-
-    // 1) normal update (boxplus)
     state_ += solution;
-
-    // 2) compute current residual metric (already computed above)
-    double cur_res = lio_quality_.mean_abs_res;
-
-    // 3) rollback if residual gets worse (same spirit as lightning)
-    if (use_aa_ && iterCount > 0 && cur_res >= last_res * 1.01) {
-      state_ = last_state;
-      break;  // stop iterating
-    }
-
-    // 4) Anderson Acceleration on dx_all = (state_ - start_state)
-    if (use_aa_) {
-      Eigen::Matrix<double, DIM_STATE, 1> dx_all = state_ - start_state; // boxminus via operator-
-      if (!aa_inited) {
-        aa_.init(dx_all);     // aa_ should be a member in VoxelMapManager
-        aa_inited = true;
-      } else {
-        Eigen::VectorXd new_dx_all = aa_.compute(dx_all);
-        state_ = start_state + new_dx_all; // boxplus via operator+
-      }
-    }
-
-    last_res = cur_res;
-    // ===== end AA update =====
-
     auto rot_add = solution.block<3, 1>(0, 0);
     auto t_add = solution.block<3, 1>(3, 0);
     if ((rot_add.norm() * 57.3 < 0.01) && (t_add.norm() * 100 < 0.015)) { flg_EKF_converged = true; }

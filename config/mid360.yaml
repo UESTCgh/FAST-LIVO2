@@ -108,8 +108,3 @@ lio_quality:
   rmse_max: 0.50
   min_eig_min: 1.0e-6
   cond_max: 1.0e10
-
-lio:
-  use_aa: true     # nh.param<bool>("lio/use_aa", ..., true)
-  aa_m: 5          # nh.param<int>("lio/aa_m", ..., 5)
-  aa_lambda: 1.0e-6  # nh.param<double>("lio/aa_lambda", ..., 1e-6)
