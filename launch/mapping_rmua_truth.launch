@@ -1,0 +1,13 @@
+<launch>
+    <arg name="rviz" default="true" />
+    <include file="$(find fast_livo)/launch/mapping_rmua.launch">
+        <arg name="rviz" value="$(arg rviz)" />
+        <arg name="truth_refine" value="true" />
+        <arg name="truth_refine_mode" value="blend" />
+        <arg name="truth_refine_pose_topic" value="/uav/state/pose" />
+        <arg name="truth_refine_odom_topic" value="/uav/state/odom" />
+        <arg name="truth_refine_path_topic" value="/uav/state/path" />
+        <arg name="truth_refine_position_alpha" value="0.35" />
+        <arg name="truth_refine_orientation_alpha" value="0.20" />
+    </include>
+</launch>

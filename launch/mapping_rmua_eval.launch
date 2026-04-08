@@ -1,0 +1,11 @@
+<launch>
+    <arg name="rviz" default="true" />
+    <arg name="traj_eval_csv" default="$(find fast_livo)/Log/trajectory_eval.csv" />
+    <include file="$(find fast_livo)/launch/mapping_rmua.launch">
+        <arg name="rviz" value="false" />
+        <arg name="traj_eval" value="true" />
+        <arg name="traj_eval_csv" value="$(arg traj_eval_csv)" />
+    </include>
+
+    <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz_eval" args="-d $(find fast_livo)/rviz_cfg/fast_livo2_eval.rviz" />
+</launch>

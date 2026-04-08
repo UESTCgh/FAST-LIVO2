@@ -12,6 +12,26 @@ which is included as part of this source code package.
 
 #include "preprocess.h"
 
+#include <algorithm>
+#include <cmath>
+
+namespace
+{
+bool HasField(const sensor_msgs::PointCloud2 &msg, const std::string &field_name)
+{
+  return std::any_of(msg.fields.begin(), msg.fields.end(), [&](const sensor_msgs::PointField &field) {
+    return field.name == field_name;
+  });
+}
+
+bool IsFinitePoint(const float x, const float y, const float z)
+{
+  constexpr float kMaxAbsCoord = 1e4f;
+  return std::isfinite(x) && std::isfinite(y) && std::isfinite(z) &&
+         std::abs(x) < kMaxAbsCoord && std::abs(y) < kMaxAbsCoord && std::abs(z) < kMaxAbsCoord;
+}
+} // namespace
+
 #define RETURN0 0x00
 #define RETURN0AND1 0x10
 
@@ -348,6 +368,82 @@ void Preprocess::velodyne_handler(const sensor_msgs::PointCloud2::ConstPtr &msg)
   pl_surf.clear();
   pl_corn.clear();
   pl_full.clear();
+
+  const bool has_intensity = HasField(*msg, "intensity");
+  const bool has_ring = HasField(*msg, "ring");
+  const bool has_time = HasField(*msg, "time");
+
+  if (!(has_ring && has_time))
+  {
+    if (feature_enabled)
+    {
+      ROS_WARN_THROTTLE(5.0, "LiDAR cloud lacks ring/time fields; falling back to generic XYZ/XYZI parsing without feature extraction.");
+    }
+
+    constexpr float kSyntheticScanPeriodMs = 100.0f; // AirSim settings use 10 RPS by default.
+
+    if (has_intensity)
+    {
+      pcl::PointCloud<pcl::PointXYZI> pl_orig;
+      pcl::fromROSMsg(*msg, pl_orig);
+      const int plsize = pl_orig.points.size();
+      if (plsize == 0) return;
+      pl_surf.reserve(plsize);
+
+      for (int i = 0; i < plsize; i++)
+      {
+        if (i % point_filter_num != 0) continue;
+
+        const auto &pt = pl_orig.points[i];
+        if (!IsFinitePoint(pt.x, pt.y, pt.z)) continue;
+
+        const double range = pt.x * pt.x + pt.y * pt.y + pt.z * pt.z;
+        if (range <= blind_sqr) continue;
+
+        PointType added_pt;
+        added_pt.normal_x = 0;
+        added_pt.normal_y = 0;
+        added_pt.normal_z = 0;
+        added_pt.x = pt.x;
+        added_pt.y = pt.y;
+        added_pt.z = pt.z;
+        added_pt.intensity = std::isfinite(pt.intensity) ? pt.intensity : 1.0f;
+        added_pt.curvature = (plsize > 1) ? kSyntheticScanPeriodMs * static_cast<float>(i) / static_cast<float>(plsize - 1) : 0.0f;
+        pl_surf.points.push_back(added_pt);
+      }
+    }
+    else
+    {
+      pcl::PointCloud<pcl::PointXYZ> pl_orig;
+      pcl::fromROSMsg(*msg, pl_orig);
+      const int plsize = pl_orig.points.size();
+      if (plsize == 0) return;
+      pl_surf.reserve(plsize);
+
+      for (int i = 0; i < plsize; i++)
+      {
+        if (i % point_filter_num != 0) continue;
+
+        const auto &pt = pl_orig.points[i];
+        if (!IsFinitePoint(pt.x, pt.y, pt.z)) continue;
+
+        const double range = pt.x * pt.x + pt.y * pt.y + pt.z * pt.z;
+        if (range <= blind_sqr) continue;
+
+        PointType added_pt;
+        added_pt.normal_x = 0;
+        added_pt.normal_y = 0;
+        added_pt.normal_z = 0;
+        added_pt.x = pt.x;
+        added_pt.y = pt.y;
+        added_pt.z = pt.z;
+        added_pt.intensity = 1.0f;
+        added_pt.curvature = (plsize > 1) ? kSyntheticScanPeriodMs * static_cast<float>(i) / static_cast<float>(plsize - 1) : 0.0f;
+        pl_surf.points.push_back(added_pt);
+      }
+    }
+    return;
+  }
 
   pcl::PointCloud<velodyne_ros::Point> pl_orig;
   pcl::fromROSMsg(*msg, pl_orig);

@@ -127,6 +127,12 @@ add_library(laser_mapping src/LIVMapper.cpp)
 # Add the main executable
 add_executable(fastlivo_mapping src/main.cpp)
 
+catkin_install_python(PROGRAMS
+  scripts/truth_localization_bridge.py
+  scripts/traj_error_monitor.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
 # Link libraries to the executable
 target_link_libraries(fastlivo_mapping
   laser_mapping

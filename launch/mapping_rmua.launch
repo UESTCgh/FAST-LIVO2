@@ -1,0 +1,60 @@
+<launch>
+    <arg name="rviz" default="true" />
+    <arg name="truth_refine" default="false" />
+    <arg name="truth_refine_mode" default="blend" />
+    <arg name="truth_refine_source_topic" default="/aft_mapped_to_init" />
+    <arg name="truth_refine_pose_topic" default="/fast_livo/pose_truth_refined" />
+    <arg name="truth_refine_odom_topic" default="/fast_livo/odom_truth_refined" />
+    <arg name="truth_refine_path_topic" default="/fast_livo/path_truth_refined" />
+    <arg name="truth_refine_position_alpha" default="0.35" />
+    <arg name="truth_refine_orientation_alpha" default="0.20" />
+    <arg name="traj_eval" default="false" />
+    <arg name="traj_eval_csv" default="$(find fast_livo)/Log/trajectory_eval.csv" />
+    <param name="/use_sim_time" value="false" />
+    <node pkg="fast_livo" type="fastlivo_mapping" name="laserMapping" output="screen">
+        <rosparam command="load" file="$(find fast_livo)/config/rmua_sim.yaml" />
+        <param name="cam_model" type="string" value="Pinhole" />
+    </node>
+
+    <group if="$(arg rviz)">
+        <node pkg="rviz" type="rviz" name="rviz" args="-d $(find fast_livo)/rviz_cfg/fast_livo2.rviz" />
+    </group>
+    
+    <node pkg="image_transport" type="republish" name="republish" 
+          args="compressed in:=/airsim_node/drone_1/front_left/Scene/compressed raw out:=/airsim_node/drone_1/front_left/Scene" 
+          output="screen" respawn="true"/>
+
+    <node if="$(arg truth_refine)" pkg="fast_livo" type="truth_localization_bridge.py" name="truth_localization_bridge" output="screen">
+        <param name="source_topic" value="$(arg truth_refine_source_topic)" />
+        <param name="reference_topic" value="/airsim_node/drone_1/debug/pose_gt" />
+        <param name="pose_topic_out" value="$(arg truth_refine_pose_topic)" />
+        <param name="odom_topic_out" value="$(arg truth_refine_odom_topic)" />
+        <param name="path_topic_out" value="$(arg truth_refine_path_topic)" />
+        <param name="mode" value="$(arg truth_refine_mode)" />
+        <param name="position_alpha" value="$(arg truth_refine_position_alpha)" />
+        <param name="orientation_alpha" value="$(arg truth_refine_orientation_alpha)" />
+        <param name="world_frame" value="world" />
+        <param name="body_frame" value="base_link" />
+        <param name="publish_path" value="true" />
+        <param name="max_path_length" value="3000" />
+        <param name="reference_timeout" value="0.20" />
+        <param name="velocity_alpha" value="0.50" />
+    </node>
+
+    <node if="$(arg traj_eval)" pkg="fast_livo" type="traj_error_monitor.py" name="traj_error_monitor" output="screen">
+        <param name="source_topic" value="/aft_mapped_to_init" />
+        <param name="reference_topic" value="/airsim_node/drone_1/debug/pose_gt" />
+        <param name="csv_path" value="$(arg traj_eval_csv)" />
+        <param name="world_frame" value="world" />
+        <param name="publish_path" value="true" />
+        <param name="max_path_length" value="4000" />
+        <param name="reference_timeout" value="0.20" />
+        <param name="aligned_path_topic" value="/fast_livo/eval/aligned_path" />
+        <param name="reference_path_topic" value="/fast_livo/eval/reference_path" />
+        <param name="position_error_topic" value="/fast_livo/eval/position_error" />
+        <param name="yaw_error_topic" value="/fast_livo/eval/yaw_error_deg" />
+        <param name="rmse_position_topic" value="/fast_livo/eval/rmse_position" />
+        <param name="summary_topic" value="/fast_livo/eval/summary" />
+    </node>
+
+</launch>
