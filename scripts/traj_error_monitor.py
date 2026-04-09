@@ -5,11 +5,10 @@ import math
 import os
 
 import rospy
-import tf
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry, Path
 from std_msgs.msg import Float64, Float64MultiArray
-from tf.transformations import euler_from_quaternion, inverse_matrix, quaternion_from_matrix, quaternion_matrix, translation_from_matrix
+from tf.transformations import euler_from_quaternion, inverse_matrix, quaternion_from_matrix, quaternion_matrix
 
 
 def tuple_all_finite(values):
@@ -55,10 +54,8 @@ class TrajErrorMonitor:
         self.reference_timeout = max(0.01, float(rospy.get_param("~reference_timeout", 0.2)))
         self.world_frame = rospy.get_param("~world_frame", "world")
         self.publish_path = rospy.get_param("~publish_path", True)
-        self.max_path_length = max(10, int(rospy.get_param("~max_path_length", 4000)))
+        self.max_path_length = int(rospy.get_param("~max_path_length", 0))
         self.csv_path = rospy.get_param("~csv_path", "")
-        self.publish_tf = rospy.get_param("~publish_tf", True)
-        self.tf_child_frame = rospy.get_param("~tf_child_frame", "")
 
         self.aligned_path_topic = rospy.get_param("~aligned_path_topic", "/fast_livo/eval/aligned_path")
         self.reference_path_topic = rospy.get_param("~reference_path_topic", "/fast_livo/eval/reference_path")
@@ -69,7 +66,6 @@ class TrajErrorMonitor:
 
         self.reference_msg = None
         self.align_matrix = None
-        self.source_frame = ""
         self.sample_count = 0
         self.pos_sq_sum = 0.0
         self.yaw_sq_sum = 0.0
@@ -87,7 +83,6 @@ class TrajErrorMonitor:
         self.yaw_error_pub = rospy.Publisher(self.yaw_error_topic, Float64, queue_size=10)
         self.rmse_position_pub = rospy.Publisher(self.rmse_position_topic, Float64, queue_size=10)
         self.summary_pub = rospy.Publisher(self.summary_topic, Float64MultiArray, queue_size=10)
-        self.tf_broadcaster = tf.TransformBroadcaster() if self.publish_tf else None
 
         self.csv_file = None
         self.csv_writer = None
@@ -151,7 +146,7 @@ class TrajErrorMonitor:
         aligned_msg.pose = aligned_pose
         self.aligned_path.header = aligned_msg.header
         self.aligned_path.poses.append(aligned_msg)
-        if len(self.aligned_path.poses) > self.max_path_length:
+        if self.max_path_length > 0 and len(self.aligned_path.poses) > self.max_path_length:
             self.aligned_path.poses = self.aligned_path.poses[-self.max_path_length :]
         self.aligned_path_pub.publish(self.aligned_path)
 
@@ -161,34 +156,15 @@ class TrajErrorMonitor:
         ref_msg.pose = ref_pose
         self.reference_path.header = ref_msg.header
         self.reference_path.poses.append(ref_msg)
-        if len(self.reference_path.poses) > self.max_path_length:
+        if self.max_path_length > 0 and len(self.reference_path.poses) > self.max_path_length:
             self.reference_path.poses = self.reference_path.poses[-self.max_path_length :]
         self.reference_path_pub.publish(self.reference_path)
-
-    def publish_alignment_tf(self, stamp):
-        if self.tf_broadcaster is None or self.align_matrix is None:
-            return
-        child_frame = self.tf_child_frame or self.source_frame
-        if not child_frame or child_frame == self.world_frame:
-            return
-        trans = translation_from_matrix(self.align_matrix)
-        quat = quaternion_from_matrix(self.align_matrix)
-        self.tf_broadcaster.sendTransform(
-            (float(trans[0]), float(trans[1]), float(trans[2])),
-            (float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])),
-            stamp,
-            child_frame,
-            self.world_frame,
-        )
 
     def source_cb(self, msg):
         if self.reference_msg is None:
             return
 
         stamp = msg.header.stamp if not msg.header.stamp.is_zero() else rospy.Time.now()
-        self.source_frame = msg.header.frame_id or "camera_init"
-        if not self.reference_fresh(stamp):
-            return
 
         src_pose = msg.pose.pose
         src_values = (
@@ -205,7 +181,8 @@ class TrajErrorMonitor:
             self.align_matrix = ref_mat.dot(inverse_matrix(src_mat))
             rospy.loginfo("traj_error_monitor initialized first-frame alignment")
 
-        self.publish_alignment_tf(stamp)
+        if not self.reference_fresh(stamp):
+            return
 
         aligned_mat = self.align_matrix.dot(src_mat)
         aligned_pose = PoseStamped()

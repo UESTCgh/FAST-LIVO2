@@ -10,5 +10,8 @@
         <arg name="truth_refine_pose_topic" value="/uav/state/pose" />
         <arg name="truth_refine_odom_topic" value="/uav/state/odom" />
         <arg name="truth_refine_path_topic" value="/uav/state/path" />
+        <arg name="traj_eval" value="true" />
+        <arg name="traj_eval_reference_timeout" value="5.0" />
+        <arg name="truth_viz" value="true" />
     </include>
 </launch>

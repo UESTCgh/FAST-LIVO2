@@ -1,9 +1,12 @@
 # --- 1. 基础通信配置 (Common) ---
 common:
   img_topic: "/airsim_node/drone_1/front_left/Scene"
-  lid_topic: "/airsim_node/drone_1/lidar"
-  imu_topic: "/airsim_node/drone_1/imu/imu"
-  img_en: 1
+  # lid_topic: "/airsim_node/drone_1/lidar"
+  # imu_topic: "/airsim_node/drone_1/imu/imu"
+  lid_topic: "/lidar_flu"
+  imu_topic: "/imu_flu"
+
+  img_en: 0
   lidar_en: 1
   ros_driver_bug_fix: true
 
@@ -26,7 +29,7 @@ scale: 1.0
 # --- 3. 传感器外参 (Extrinsic) ---
 extrin_calib:
   # Lidar 相对于 IMU 的位姿
-  extrinsic_T: [0.0, 0.0, 0.05] 
+  extrinsic_T: [0.0, 0.0, 0.05]
   extrinsic_R: [1, 0, 0, 0, 1, 0, 0, 0, 1]
   
   # 相机相对于 Lidar 的位姿 (Pcl = Cam_pos - Lidar_pos)
@@ -62,10 +65,11 @@ vio:
 imu:
   imu_en: true
   imu_int_frame: 30
-  acc_cov: 0.3           
-  gyr_cov: 0.3
-  b_acc_cov: 0.0001
-  b_gyr_cov: 0.0001
+  acc_cov: 0.01
+  gyr_cov: 0.01
+  b_acc_cov: 0.00001
+  b_gyr_cov: 0.00001
+
 
 # --- 7. 激光里程计 (LIO) ---
 lio:
@@ -74,14 +78,14 @@ lio:
   beam_err: 0.05
   min_eigen_value: 0.0025
   voxel_size: 0.5
-  max_layer: 2
+  max_layer: 3
   max_points_num: 50
   layer_init_num: [5, 5, 5, 5, 5]
 
 # --- 8. 其他系统参数 ---
 uav:
   imu_rate_odom: true
-  gravity_align_en: true
+  gravity_align_en: false
 
 publish:
   dense_map_en: true

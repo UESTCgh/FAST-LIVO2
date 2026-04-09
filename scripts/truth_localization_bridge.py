@@ -2,6 +2,7 @@
 
 import math
 
+import numpy as np
 import rospy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry, Path
@@ -12,6 +13,19 @@ from tf.transformations import (
     quaternion_matrix,
     quaternion_slerp,
 )
+
+
+# 绕 x 轴 180° 的相似变换矩阵: y, z 取反, x 不变
+# 用于把当前坐标系 (y, z 反向) 变换到 "前-左-下"
+FLIP_MATRIX = np.diag([1.0, -1.0, -1.0, 1.0])
+
+
+def flip_pose_matrix(mat):
+    """Express a pose in a frame rotated 180 deg around x.
+    Position: (x, y, z) -> (x, -y, -z)
+    Orientation: similarity transform F * R * F
+    """
+    return FLIP_MATRIX.dot(mat).dot(FLIP_MATRIX)
 
 
 def tuple_all_finite(values):
@@ -67,7 +81,7 @@ class TruthLocalizationBridge:
         self.reference_timeout = max(0.01, float(rospy.get_param("~reference_timeout", 0.2)))
         self.velocity_alpha = max(0.0, min(1.0, float(rospy.get_param("~velocity_alpha", 0.5))))
         self.publish_path = rospy.get_param("~publish_path", True)
-        self.max_path_length = max(10, int(rospy.get_param("~max_path_length", 2000)))
+        self.max_path_length = int(rospy.get_param("~max_path_length", 0))
 
         self.reference_msg = None
         self.align_matrix = None
@@ -94,6 +108,7 @@ class TruthLocalizationBridge:
             self.pose_topic_out,
             self.odom_topic_out,
         )
+        rospy.loginfo("truth_localization_bridge: applying y/z flip (-> front-left-down) on source and reference")
 
     def reference_cb(self, msg):
         values = (
@@ -124,8 +139,7 @@ class TruthLocalizationBridge:
             rot[0, 2] * world_velocity[0] + rot[1, 2] * world_velocity[1] + rot[2, 2] * world_velocity[2],
         )
 
-    def blend_matrices(self, aligned_mat, reference_pose):
-        ref_mat = pose_to_matrix(reference_pose)
+    def blend_matrices(self, aligned_mat, ref_mat):
         out_mat = aligned_mat.copy()
 
         if self.use_reference_position:
@@ -135,12 +149,7 @@ class TruthLocalizationBridge:
 
         if self.use_reference_orientation:
             q_aligned = quaternion_from_matrix(aligned_mat)
-            q_ref = [
-                reference_pose.orientation.x,
-                reference_pose.orientation.y,
-                reference_pose.orientation.z,
-                reference_pose.orientation.w,
-            ]
+            q_ref = quaternion_from_matrix(ref_mat)
             q_out = quaternion_slerp(q_aligned, q_ref, self.orientation_alpha)
             rot_mat = quaternion_matrix(q_out)
             out_mat[:3, :3] = rot_mat[:3, :3]
@@ -151,12 +160,14 @@ class TruthLocalizationBridge:
         if self.reference_msg is None:
             return None
 
-        src_mat = pose_to_matrix(source_pose)
-        ref_mat = pose_to_matrix(self.reference_msg.pose)
+        # 关键改动: 在矩阵层面对 source 和 reference 同时做 y/z 翻转
+        # 这样后面的 align / blend / 输出全都在 "前-左-下" 坐标系下进行
+        src_mat = flip_pose_matrix(pose_to_matrix(source_pose))
+        ref_mat = flip_pose_matrix(pose_to_matrix(self.reference_msg.pose))
 
         if self.align_matrix is None:
             self.align_matrix = ref_mat.dot(inverse_matrix(src_mat))
-            rospy.loginfo("truth_localization_bridge initialized source-to-reference alignment")
+            rospy.loginfo("truth_localization_bridge initialized source-to-reference alignment (in flipped frame)")
 
         aligned_mat = self.align_matrix.dot(src_mat)
         if not self.reference_fresh(stamp):
@@ -165,7 +176,7 @@ class TruthLocalizationBridge:
         if self.mode == "truth":
             return ref_mat
         if self.mode == "blend":
-            return self.blend_matrices(aligned_mat, self.reference_msg.pose)
+            return self.blend_matrices(aligned_mat, ref_mat)
         return aligned_mat
 
     def publish_output(self, stamp, out_pose):
@@ -217,7 +228,7 @@ class TruthLocalizationBridge:
         if self.path_pub is not None:
             self.path_msg.header = out_pose.header
             self.path_msg.poses.append(out_pose)
-            if len(self.path_msg.poses) > self.max_path_length:
+            if self.max_path_length > 0 and len(self.path_msg.poses) > self.max_path_length:
                 self.path_msg.poses = self.path_msg.poses[-self.max_path_length :]
             self.path_pub.publish(self.path_msg)
 

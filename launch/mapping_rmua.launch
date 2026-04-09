@@ -10,6 +10,11 @@
     <arg name="truth_refine_orientation_alpha" default="0.20" />
     <arg name="traj_eval" default="false" />
     <arg name="traj_eval_csv" default="$(find fast_livo)/Log/trajectory_eval.csv" />
+    <arg name="traj_eval_reference_timeout" default="0.20" />
+    <arg name="truth_viz" default="true" />
+    <arg name="truth_viz_pose_topic" default="/airsim_node/drone_1/debug/pose_gt_complete" />
+    <arg name="truth_viz_odom_topic" default="/airsim_node/drone_1/debug/odom_gt_complete" />
+    <arg name="truth_viz_path_topic" default="/airsim_node/drone_1/debug/path_gt_complete" />
     <param name="/use_sim_time" value="false" />
     <node pkg="fast_livo" type="fastlivo_mapping" name="laserMapping" output="screen">
         <rosparam command="load" file="$(find fast_livo)/config/rmua_sim.yaml" />
@@ -24,6 +29,17 @@
           args="compressed in:=/airsim_node/drone_1/front_left/Scene/compressed raw out:=/airsim_node/drone_1/front_left/Scene" 
           output="screen" respawn="true"/>
 
+    <node if="$(arg truth_viz)" pkg="fast_livo" type="truth_pose_viz_bridge.py" name="truth_pose_viz_bridge" output="screen">
+        <param name="source_topic" value="/airsim_node/drone_1/debug/pose_gt" />
+        <param name="pose_topic_out" value="$(arg truth_viz_pose_topic)" />
+        <param name="odom_topic_out" value="$(arg truth_viz_odom_topic)" />
+        <param name="path_topic_out" value="$(arg truth_viz_path_topic)" />
+        <param name="world_frame" value="world" />
+        <param name="body_frame" value="pose_gt_complete" />
+        <param name="publish_path" value="true" />
+        <param name="max_path_length" value="0" />
+    </node>
+
     <node if="$(arg truth_refine)" pkg="fast_livo" type="truth_localization_bridge.py" name="truth_localization_bridge" output="screen">
         <param name="source_topic" value="$(arg truth_refine_source_topic)" />
         <param name="reference_topic" value="/airsim_node/drone_1/debug/pose_gt" />
@@ -36,7 +52,7 @@
         <param name="world_frame" value="world" />
         <param name="body_frame" value="base_link" />
         <param name="publish_path" value="true" />
-        <param name="max_path_length" value="3000" />
+        <param name="max_path_length" value="0" />
         <param name="reference_timeout" value="0.20" />
         <param name="velocity_alpha" value="0.50" />
     </node>
@@ -47,8 +63,8 @@
         <param name="csv_path" value="$(arg traj_eval_csv)" />
         <param name="world_frame" value="world" />
         <param name="publish_path" value="true" />
-        <param name="max_path_length" value="4000" />
-        <param name="reference_timeout" value="0.20" />
+        <param name="max_path_length" value="0" />
+        <param name="reference_timeout" value="$(arg traj_eval_reference_timeout)" />
         <param name="aligned_path_topic" value="/fast_livo/eval/aligned_path" />
         <param name="reference_path_topic" value="/fast_livo/eval/reference_path" />
         <param name="position_error_topic" value="/fast_livo/eval/position_error" />

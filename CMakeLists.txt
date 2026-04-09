@@ -130,6 +130,7 @@ add_executable(fastlivo_mapping src/main.cpp)
 catkin_install_python(PROGRAMS
   scripts/truth_localization_bridge.py
   scripts/traj_error_monitor.py
+  scripts/truth_pose_viz_bridge.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
