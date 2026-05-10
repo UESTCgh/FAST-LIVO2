@@ -518,6 +518,18 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
     VD(DIM_STATE)
     solution = K_1.block<DIM_STATE, 6>(0, 0) * HTz + vec.block<DIM_STATE, 1>(0, 0) - G.block<DIM_STATE, 6>(0, 0) * vec.block<6, 1>(0, 0);
     int minRow, minCol;
+    if (lio_quality_.degenerate)
+    {
+      // 将更新投影到可观测子空间，冻结退化方向
+      Eigen::Matrix<double, 6, 6> P_obs = Eigen::Matrix<double, 6, 6>::Identity();
+      for (int i = 0; i < 6; i++)
+        if (es.eigenvalues()(i) < 1e-4)
+        {
+          Eigen::Matrix<double, 6, 1> v = es.eigenvectors().col(i);
+          P_obs -= v * v.transpose();
+        }
+      solution.head<6>() = P_obs * solution.head<6>();
+    }
     state_ += solution;
     auto rot_add = solution.block<3, 1>(0, 0);
     auto t_add = solution.block<3, 1>(3, 0);
