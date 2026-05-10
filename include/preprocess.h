@@ -88,7 +88,7 @@ struct EIGEN_ALIGN16 Point
   float intensity;
   std::uint32_t t;
   std::uint16_t reflectivity;
-  uint8_t ring;
+  std::uint16_t ring;
   std::uint16_t ambient;
   std::uint32_t range;
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -96,7 +96,7 @@ struct EIGEN_ALIGN16 Point
 } // namespace ouster_ros
 POINT_CLOUD_REGISTER_POINT_STRUCT(ouster_ros::Point, (float, x, x)(float, y, y)(float, z, z)(float, intensity, intensity)
                                   (std::uint32_t, t, t)(std::uint16_t, reflectivity,
-                                                        reflectivity)(std::uint8_t, ring, ring)(std::uint16_t, ambient, ambient)(std::uint32_t, range, range))
+                                                        reflectivity)(std::uint16_t, ring, ring)(std::uint16_t, ambient, ambient)(std::uint32_t, range, range))
 /****************/
 
 /*** Hesai_XT32 ***/
