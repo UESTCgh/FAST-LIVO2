@@ -50,6 +50,7 @@ void loadVoxelConfig(ros::NodeHandle &nh, VoxelMapConfig &voxel_config)
   nh.param<bool>("local_map/map_sliding_en", voxel_config.map_sliding_en, false);
   nh.param<int>("local_map/half_map_size", voxel_config.half_map_size, 100);
   nh.param<double>("local_map/sliding_thresh", voxel_config.sliding_thresh, 8);
+  nh.param<double>("lio/degenerate_eig_thresh", voxel_config.degenerate_eig_thresh_, 0.1);
 }
 
 void VoxelOctoTree::init_plane(const std::vector<pointWithVar> &points, VoxelPlane *plane)
@@ -517,6 +518,36 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
     auto vec = state_propagat - state_;
     VD(DIM_STATE)
     solution = K_1.block<DIM_STATE, 6>(0, 0) * HTz + vec.block<DIM_STATE, 1>(0, 0) - G.block<DIM_STATE, 6>(0, 0) * vec.block<6, 1>(0, 0);
+
+    // --- Degeneracy-aware projection ---
+    // eigenvectors of Info (6x6) are already computed above (es).
+    // For each degenerate direction (eigenvalue < threshold), replace the
+    // lidar-driven update with the IMU prediction (vec), so the degenerate
+    // DOF is supported purely by IMU propagation.
+    {
+      // threshold: direction is "well-constrained" if its eigenvalue exceeds
+      // degenerate_eig_thresh (tune per dataset; 0.1 is a reasonable start).
+      const double degenerate_eig_thresh = config_setting_.degenerate_eig_thresh_;
+      const auto &evecs = es.eigenvectors(); // columns are eigenvectors, ascending order
+      // imu prediction for the 6-DOF pose part (rot+pos)
+      Eigen::Matrix<double, 6, 1> vec6 = vec.block<6, 1>(0, 0);
+      Eigen::Matrix<double, 6, 1> sol6 = solution.block<6, 1>(0, 0);
+      for (int k = 0; k < 6; k++)
+      {
+        if (eig(k) < degenerate_eig_thresh)
+        {
+          // project both solution and imu-vec onto this eigenvector
+          Eigen::Matrix<double, 6, 1> ev = evecs.col(k).real();
+          double lidar_proj = ev.dot(sol6);
+          double imu_proj   = ev.dot(vec6);
+          // replace lidar contribution with imu prediction along this direction
+          sol6 += (imu_proj - lidar_proj) * ev;
+        }
+      }
+      solution.block<6, 1>(0, 0) = sol6;
+    }
+    // --- end degeneracy projection ---
+
     int minRow, minCol;
     state_ += solution;
     auto rot_add = solution.block<3, 1>(0, 0);

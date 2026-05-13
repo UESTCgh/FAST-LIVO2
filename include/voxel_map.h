@@ -63,6 +63,8 @@ typedef struct VoxelMapConfig
   double sliding_thresh;
   bool map_sliding_en;
   int half_map_size;
+
+  double degenerate_eig_thresh_ = 0.1;
 } VoxelMapConfig;
 
 typedef struct PointToPlane
