@@ -1,0 +1,104 @@
+common:
+  img_topic: "/left_camera/image"
+  lid_topic: "/velodyne_points"
+  imu_topic: "/imu/data"
+  img_en: 1
+  lidar_en: 1
+  ros_driver_bug_fix: false
+
+extrin_calib:
+  extrinsic_T: [-0.027172, -0.034873, 0.062643]
+  extrinsic_R: [0.998638, 0.052001, -0.004278,
+                -0.051937, 0.998554, 0.013900,
+                0.004994, -0.013659, 0.999894]
+  Rcl: [0.05857192, -0.99827660, -0.00352206,
+        -0.02269752,  0.00219542, -0.99974022,
+         0.99802500,  0.05863656, -0.02252919]
+  Pcl: [0.08306313, -0.08129369, -0.04274233]
+
+time_offset:
+  imu_time_offset: 0.0
+  img_time_offset: 0.0
+  exposure_time_init: 0.0
+
+preprocess:
+  point_filter_num: 1
+  filter_size_surf: 0.1
+  lidar_type: 2  # Velodyne
+  scan_line: 16
+  blind: 0.5
+
+vio:
+  max_iterations: 3
+  outlier_threshold: 1000
+  img_point_cov: 1000
+  patch_size: 8
+  patch_pyrimid_level: 4
+  normal_en: true
+  raycast_en: false
+  inverse_composition_en: false
+  exposure_estimate_en: true
+  inv_expo_cov: 0.1
+
+imu:
+  imu_en: true
+  imu_int_frame: 30
+  acc_cov: 0.01112
+  gyr_cov: 0.00961
+  b_acc_cov: 0.0001596
+  b_gyr_cov: 0.0000800
+  publish_rate: 200
+
+lio:
+  max_iterations: 4
+  dept_err: 0.02
+  beam_err: 0.05
+  min_eigen_value: 0.005
+  voxel_size: 0.25
+  max_layer: 2
+  max_points_num: 50
+  layer_init_num: [5, 5, 5, 5, 5]
+  degenerate_eig_thresh: 0.6
+
+local_map:
+  map_sliding_en: false
+  half_map_size: 100
+  sliding_thresh: 8
+
+publish:
+  dense_map_en: true
+  pub_effect_point_en: false
+  pub_plane_en: false
+  pub_scan_num: 1
+  blind_rgb_points: 0.0
+  cloud_360: true
+  cloud_body: false
+
+evo:
+  seq_name: "geode_bridge01"
+  pose_output_en: true
+
+pcd_save:
+  pcd_save_en: true
+  type: 0
+  colmap_output_en: false
+  filter_size_pcd: 0.15
+  interval: -1
+
+image_save:
+  img_save_en: false
+  interval: 1
+
+vio_quality:
+  tracked_min: 60
+  inlier_min: 40
+  inlier_ratio_min: 0.5
+  mean_err_max: 10.0
+  max_iters: 10
+
+lio_quality:
+  eff_min: 80
+  mean_abs_max: 0.30
+  rmse_max: 0.50
+  min_eig_min: 1.0e-6
+  cond_max: 1.0e10
