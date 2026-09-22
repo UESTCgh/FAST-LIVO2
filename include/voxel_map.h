@@ -43,6 +43,10 @@ struct LioQuality {
   double cond = 0.0;           // max/min
   bool degenerate = false;
 
+  double eigs[6] = {0, 0, 0, 0, 0, 0};      // 全部特征值（升序）
+  double min_evec[6] = {0, 0, 0, 0, 0, 0};  // 最小特征值对应特征向量 [rot(3), pos(3)]
+  int n_projected = 0;         // 本帧被 IMU 预测替代的方向数（最后一次迭代）
+
   int iters = 0;               // 实际迭代次数
 };
 

@@ -506,6 +506,11 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
     lio_quality_.min_eig = min_eig;
     lio_quality_.max_eig = max_eig;
     lio_quality_.cond = (min_eig > 1e-12) ? (max_eig / min_eig) : 1e18;
+    for (int k = 0; k < 6; k++)
+    {
+      lio_quality_.eigs[k] = eig(k);
+      lio_quality_.min_evec[k] = es.eigenvectors().col(0)(k);
+    }
 
     // 阈值需要数据集调
     // 1) min_eig太小：观测退化
@@ -532,10 +537,12 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
       // imu prediction for the 6-DOF pose part (rot+pos)
       Eigen::Matrix<double, 6, 1> vec6 = vec.block<6, 1>(0, 0);
       Eigen::Matrix<double, 6, 1> sol6 = solution.block<6, 1>(0, 0);
+      lio_quality_.n_projected = 0;
       for (int k = 0; k < 6; k++)
       {
         if (eig(k) < degenerate_eig_thresh)
         {
+          lio_quality_.n_projected++;
           // project both solution and imu-vec onto this eigenvector
           Eigen::Matrix<double, 6, 1> ev = evecs.col(k).real();
           double lidar_proj = ev.dot(sol6);

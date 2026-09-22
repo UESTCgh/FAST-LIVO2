@@ -130,6 +130,7 @@ void LIVMapper::readParameters(ros::NodeHandle &nh)
   nh.param<double>("lio_quality/rmse_max",     th_rmse_max_,     0.50);
   nh.param<double>("lio_quality/min_eig_min",  th_min_eig_min_,  1e-6);
   nh.param<double>("lio_quality/cond_max",     th_cond_max_,     1e10);
+  nh.param<bool>  ("lio_quality/log_en",       lio_quality_log_en_, false);
 
   nh.param<int>   ("vio_quality/tracked_min",      vio_tracked_min_,      60);
   nh.param<int>   ("vio_quality/inlier_min",       vio_inlier_min_,       40);
@@ -211,6 +212,14 @@ void LIVMapper::initializeFiles()
   if(img_save_en) fout_visual_pos.open(std::string(ROOT_DIR) + "Log/image/image_poses.txt", std::ios::out);
   fout_pre.open(DEBUG_FILE_DIR("mat_pre.txt"), std::ios::out);
   fout_out.open(DEBUG_FILE_DIR("mat_out.txt"), std::ios::out);
+  if (lio_quality_log_en_)
+  {
+    fout_lioq.open(DEBUG_FILE_DIR("lio_quality.csv"), std::ios::out);
+    fout_lioq << "t,eff,mean_abs,rmse,max_abs,iters,n_proj,lio_ok,"
+                 "eig0,eig1,eig2,eig3,eig4,eig5,"
+                 "evec0_r0,evec0_r1,evec0_r2,evec0_p0,evec0_p1,evec0_p2,"
+                 "px,py,pz\n";
+  }
 }
 
 void LIVMapper::initializeSubscribersAndPublishers(ros::NodeHandle &nh, image_transport::ImageTransport &it) 
@@ -456,6 +465,18 @@ void LIVMapper::handleLIO()
       _state = state_backup;                    // 状态回滚
   }
   _pv_list = voxelmap_manager->pv_list_;
+
+  if (lio_quality_log_en_ && fout_lioq.is_open())
+  {
+    fout_lioq << std::fixed << std::setprecision(6) << LidarMeasures.last_lio_update_time << ","
+              << q.eff << "," << q.mean_abs_res << "," << q.rmse_res << "," << q.max_abs_res << ","
+              << q.iters << "," << q.n_projected << "," << (lio_ok ? 1 : 0);
+    fout_lioq << std::scientific << std::setprecision(4);
+    for (int k = 0; k < 6; k++) fout_lioq << "," << q.eigs[k];
+    fout_lioq << std::fixed << std::setprecision(4);
+    for (int k = 0; k < 6; k++) fout_lioq << "," << q.min_evec[k];
+    fout_lioq << "," << _state.pos_end[0] << "," << _state.pos_end[1] << "," << _state.pos_end[2] << "\n";
+  }
 
   double t2 = omp_get_wtime();
 

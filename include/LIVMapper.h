@@ -194,6 +194,8 @@ public:
   double th_rmse_max_     = 0.50;
   double th_min_eig_min_  = 1e-6;
   double th_cond_max_     = 1e10;
+  bool   lio_quality_log_en_ = false;   // dump per-frame LIO quality to Log/lio_quality.csv
+  ofstream fout_lioq;
 
   // VIO quality thresholds
   int    vio_tracked_min_   = 60;     // tracked features/patches

@@ -102,3 +102,4 @@ lio_quality:
   rmse_max: 0.50
   min_eig_min: 1.0e-6
   cond_max: 1.0e10
+  log_en: true          # per-frame eigenvalues / residuals -> Log/lio_quality.csv
