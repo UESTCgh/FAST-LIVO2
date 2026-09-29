@@ -1,0 +1,135 @@
+common:
+  img_topic: "/left_camera/image"
+  lid_topic: "/livox/lidar"
+  imu_topic: "/livox/imu"
+  img_en: 1
+  lidar_en: 1
+  ros_driver_bug_fix: false
+
+extrin_calib:
+  # gamma 平台 T_IMU_LiDAR（LiDAR→IMU）：p_imu = R * p_lidar + t
+  extrinsic_T: [0.049258, -0.012500, 0.026946]
+  extrinsic_R: [0.999620, 0.027463, 0.002445,
+                -0.027517, 0.999299, 0.025398,
+                -0.001746, -0.025456, 0.999674]
+  # gamma 平台 T_LiDAR_CamL（相机→LiDAR）
+  Rcl: [0.030481734, 0.010470226, 0.999480484,
+        -0.999506201, 0.007952445, 0.030399211,
+        -0.007630027, -0.999913562, 0.010707461]
+  Pcl: [-0.146576505, -0.128483331, -0.046813879]
+
+time_offset:
+  imu_time_offset: 0.0
+  img_time_offset: 0.1
+  exposure_time_init: 0.0
+
+preprocess:
+  point_filter_num: 1
+  filter_size_surf: 0.1
+  lidar_type: 1 # Livox Avia LiDAR
+  scan_line: 6
+  blind: 0.8
+  feature_extract_enabled: true
+
+vio:
+  max_iterations: 5
+  outlier_threshold: 1000
+  img_point_cov: 100
+  patch_size: 8
+  patch_pyrimid_level: 4
+  normal_en: true
+  raycast_en: false
+  inverse_composition_en: false
+  exposure_estimate_en: true
+  inv_expo_cov: 0.1
+
+imu:
+  imu_en: true
+  imu_int_frame: 30
+  acc_cov: 0.5
+  gyr_cov: 0.3
+  b_acc_cov: 0.0001
+  b_gyr_cov: 0.0001
+
+lio:
+  max_iterations: 5
+  dept_err: 0.02
+  beam_err: 0.05
+  min_eigen_value: 0.0025
+  voxel_size: 0.5
+  max_layer: 2
+  max_points_num: 50
+  layer_init_num: [5, 5, 5, 5, 5]
+  degenerate_eig_thresh: 0.1
+  # L1 退化兜底（关闭——纯几何 + COIN-LIO 退化检测）
+  motion_prior_en: false
+  motion_prior_v_max: 2.0
+  motion_prior_sigma: 0.05
+  motion_prior_eig_ratio: 0.05
+  motion_prior_freeze_ba: false
+  motion_prior_min_eff: 20
+  motion_prior_cov_clamp_n: 50
+  motion_prior_cov_max_pos: 1.0
+  motion_prior_cov_max_vel: 0.5
+  # L2 强度残差（关闭——纯几何）
+  intensity_en: false
+  height_en: false
+  intensity:
+    voxel_size: 0.5
+    pixel_size: 0.05
+    point_leaf: 0.1
+    top_k_voxels: 100
+    max_range: 30.0
+    min_range: 1.5
+    min_range_weight: 0.5
+    sigma_pho: 8.0
+    lambda_pho: 1.0
+    line_filter_en: true
+    brightness_window: 21
+    max_voxels: 200000
+
+local_map:
+  map_sliding_en: false
+  half_map_size: 100
+  sliding_thresh: 8
+
+uav:
+  gravity_align_en: false
+  imu_rate_odom: true
+
+publish:
+  dense_map_en: true
+  pub_effect_point_en: false
+  pub_plane_en: false
+  pub_scan_num: 1
+  blind_rgb_points: 0.0
+
+evo:
+  seq_name: "Tunneling_tunnel1_gamma"
+  pose_output_en: true
+
+pcd_save:
+  pcd_save_en: false
+  type: 0
+  colmap_output_en: false
+  filter_size_pcd: 0.15
+  interval: -1
+
+image_save:
+  img_save_en: false
+  interval: 1
+
+vio_quality:
+  tracked_min: 60
+  inlier_min: 40
+  inlier_ratio_min: 0.5
+  mean_err_max: 10.0
+  max_iters: 10
+
+lio_quality:
+  eff_min: 80
+  mean_abs_max: 0.30
+  rmse_max: 0.50
+  min_eig_min: 1.0e-6
+  cond_max: 1.0e10
+  log_en: false
