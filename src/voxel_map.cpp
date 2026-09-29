@@ -11,6 +11,7 @@ which is included as part of this source code package.
 */
 
 #include "voxel_map.h"
+#include "intensity_map.h"
 
 void calcBodyCov(Eigen::Vector3d &pb, const float range_inc, const float degree_inc, Eigen::Matrix3d &cov)
 {
@@ -51,6 +52,19 @@ void loadVoxelConfig(ros::NodeHandle &nh, VoxelMapConfig &voxel_config)
   nh.param<int>("local_map/half_map_size", voxel_config.half_map_size, 100);
   nh.param<double>("local_map/sliding_thresh", voxel_config.sliding_thresh, 8);
   nh.param<double>("lio/degenerate_eig_thresh", voxel_config.degenerate_eig_thresh_, 0.1);
+
+  nh.param<bool>("lio/motion_prior_en", voxel_config.motion_prior_en_, false);
+  nh.param<double>("lio/motion_prior_v_max", voxel_config.motion_prior_v_max_, 2.0);
+  nh.param<double>("lio/motion_prior_sigma", voxel_config.motion_prior_sigma_, 0.2);
+  nh.param<double>("lio/motion_prior_eig_ratio", voxel_config.motion_prior_eig_ratio_, 0.05);
+  nh.param<bool>("lio/motion_prior_freeze_ba", voxel_config.motion_prior_freeze_ba_, false);
+  nh.param<int>("lio/motion_prior_min_eff", voxel_config.motion_prior_min_eff_, 20);
+  nh.param<int>("lio/motion_prior_cov_clamp_n", voxel_config.motion_prior_cov_clamp_n_, 50);
+  nh.param<double>("lio/motion_prior_cov_max_pos", voxel_config.motion_prior_cov_max_pos_, 1.0);
+  nh.param<double>("lio/motion_prior_cov_max_vel", voxel_config.motion_prior_cov_max_vel_, 0.5);
+
+  nh.param<bool>("lio/intensity_en", voxel_config.intensity_en_, false);
+  nh.param<bool>("lio/height_en", voxel_config.height_en_, false);
 }
 
 void VoxelOctoTree::init_plane(const std::vector<pointWithVar> &points, VoxelPlane *plane)
@@ -436,6 +450,25 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
 
     /*** Computation of Measuremnt Jacobian matrix H and measurents covarience
      * ***/
+    // 提前判定退化方向 η（用于投影掉几何残差在轴向的噪声 Jacobian）。
+    // 几何残差的法线因体素 PCA 误差在轴向有 ~4% 的噪声分量，会驱动轴向
+    // 速度翻转。投影掉 η 分量后，轴向只由 motion prior 约束。
+    bool proj_degen = false;
+    Eigen::Vector3d proj_eta = Eigen::Vector3d::Zero();
+    if (config_setting_.motion_prior_en_ && effct_feat_num_ > config_setting_.motion_prior_min_eff_)
+    {
+      Eigen::Matrix3d A_n = Eigen::Matrix3d::Zero();
+      for (int i = 0; i < effct_feat_num_; i++)
+        A_n += ptpl_list_[i].normal_ * ptpl_list_[i].normal_.transpose();
+      Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> npca_proj(A_n);
+      Eigen::Vector3d l = npca_proj.eigenvalues();
+      if ((l(2) > 1e-9) && (l(0) < config_setting_.motion_prior_eig_ratio_ * l(2)))
+      {
+        proj_degen = true;
+        proj_eta = npca_proj.eigenvectors().col(0);
+      }
+    }
+
     MatrixXd Hsub(effct_feat_num_, 6);
     MatrixXd Hsub_T_R_inv(6, effct_feat_num_);
     VectorXd R_inv(effct_feat_num_);
@@ -480,20 +513,29 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
       // R_inv(i) = 1.0 / (sigma_l + ptpl_list_[i].normal_.transpose() * var * ptpl_list_[i].normal_);
 
       /*** calculate the Measuremnt Jacobian matrix H ***/
-      V3D A(point_crossmat * state_.rot_end.transpose() * ptpl_list_[i].normal_);
-      Hsub.row(i) << VEC_FROM_ARRAY(A), ptpl_list_[i].normal_[0], ptpl_list_[i].normal_[1], ptpl_list_[i].normal_[2];
-      Hsub_T_R_inv.col(i) << A[0] * R_inv(i), A[1] * R_inv(i), A[2] * R_inv(i), ptpl_list_[i].normal_[0] * R_inv(i),
-          ptpl_list_[i].normal_[1] * R_inv(i), ptpl_list_[i].normal_[2] * R_inv(i);
+      V3D n_jac = ptpl_list_[i].normal_;
+      if (proj_degen)
+      {
+        // 投影掉退化方向 η 的轴向分量：几何残差在轴向不提供约束
+        n_jac -= proj_eta * proj_eta.dot(n_jac);
+      }
+      V3D A(point_crossmat * state_.rot_end.transpose() * n_jac);
+      Hsub.row(i) << VEC_FROM_ARRAY(A), n_jac[0], n_jac[1], n_jac[2];
+      Hsub_T_R_inv.col(i) << A[0] * R_inv(i), A[1] * R_inv(i), A[2] * R_inv(i), n_jac[0] * R_inv(i),
+          n_jac[1] * R_inv(i), n_jac[2] * R_inv(i);
       meas_vec(i) = -ptpl_list_[i].dis_to_plane_;
     }
     EKF_stop_flg = false;
     flg_EKF_converged = false;
     /*** Iterative Kalman Filter Update ***/
     MatrixXd K(DIM_STATE, effct_feat_num_);
-    // auto &&Hsub_T = Hsub.transpose();
-    auto &&HTz = Hsub_T_R_inv * meas_vec;
-    // fout_dbg<<"HTz: "<<HTz<<endl;
+    // H_T_H 每轮迭代重置：几何填 6x6 块，motion prior（若触发）累加到速度块 (7:10,7:10)。
+    H_T_H.setZero();
     H_T_H.block<6, 6>(0, 0) = Hsub_T_R_inv * Hsub;
+    VD(DIM_STATE) HTz;
+    HTz.setZero();
+    HTz.block<6, 1>(0, 0) = Hsub_T_R_inv * meas_vec;
+
     Eigen::Matrix<double,6,6> Info = H_T_H.block<6,6>(0,0);
 
     Info = 0.5 * (Info + Info.transpose());
@@ -517,46 +559,207 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
     // 2) cond太大：病态
     lio_quality_.degenerate = (min_eig < 1e-6) || (lio_quality_.cond > 1e10);
 
-    // EigenSolver<Matrix<double, 6, 6>> es(H_T_H.block<6,6>(0,0));
-    MD(DIM_STATE, DIM_STATE) &&K_1 = (H_T_H.block<DIM_STATE, DIM_STATE>(0, 0) + state_.cov.block<DIM_STATE, DIM_STATE>(0, 0).inverse()).inverse();
-    G.block<DIM_STATE, 6>(0, 0) = K_1.block<DIM_STATE, 6>(0, 0) * H_T_H.block<6, 6>(0, 0);
-    auto vec = state_propagat - state_;
-    VD(DIM_STATE)
-    solution = K_1.block<DIM_STATE, 6>(0, 0) * HTz + vec.block<DIM_STATE, 1>(0, 0) - G.block<DIM_STATE, 6>(0, 0) * vec.block<6, 1>(0, 0);
+    /*** Motion prior：沿几何退化方向的恒速先验（design_lio_intensity_degeneracy.md §4.2）。
+     *
+     *   观测方程：ηᵀ·v_k ≈ ηᵀ·v_{k-1}  （沿不可观方向速度不变）
+     *   每帧退化时都添加，把当前 η 向速度约束到上一帧的收敛值。
+     *   v_max 是安全限幅：target 不超过 ±v_max。
+     *
+     *   旧版 bug：只在 |ηᵀv| > v_max 时才添加伪观测 → 速度可以无阻力攀升到 8 m/s。
+     *   修复：每帧都加恒速先验，sigma 足够小以抵抗 IMU 递推漂移。           ***/
+    lio_quality_.n_degenerate_dirs = 0;
+    lio_quality_.degenerate_dir = false;
+    lio_quality_.prior_active = false;
+    lio_quality_.eta_v = 0.0;
 
-    // --- Degeneracy-aware projection ---
-    // eigenvectors of Info (6x6) are already computed above (es).
-    // For each degenerate direction (eigenvalue < threshold), replace the
-    // lidar-driven update with the IMU prediction (vec), so the degenerate
-    // DOF is supported purely by IMU propagation.
+    // COIN-LIO 退化检测（独立于 motion prior）：几何信息矩阵（Hessian）的平移子块
+    //   A = Σ n n^T R_inv（按残差权重加权）。Info = H_T_H.block<6,6>(0,0)。
+    if (effct_feat_num_ > config_setting_.motion_prior_min_eff_)
     {
-      // threshold: direction is "well-constrained" if its eigenvalue exceeds
-      // degenerate_eig_thresh (tune per dataset; 0.1 is a reasonable start).
-      const double degenerate_eig_thresh = config_setting_.degenerate_eig_thresh_;
-      const auto &evecs = es.eigenvectors(); // columns are eigenvectors, ascending order
-      // imu prediction for the 6-DOF pose part (rot+pos)
-      Eigen::Matrix<double, 6, 1> vec6 = vec.block<6, 1>(0, 0);
-      Eigen::Matrix<double, 6, 1> sol6 = solution.block<6, 1>(0, 0);
-      lio_quality_.n_projected = 0;
-      for (int k = 0; k < 6; k++)
+      Eigen::Matrix3d A = Info.block<3, 3>(3, 3);
+      Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> npca(A);
+      Eigen::Vector3d l = npca.eigenvalues(); // 升序
+      lio_quality_.npca_eigs[0] = l(0);
+      lio_quality_.npca_eigs[1] = l(1);
+      lio_quality_.npca_eigs[2] = l(2);
+
+      bool degen = (l(2) > 1e-9) && (l(0) < config_setting_.motion_prior_eig_ratio_ * l(2));
+      lio_quality_.degenerate_dir = degen;
+      if (degen)
       {
-        if (eig(k) < degenerate_eig_thresh)
+        int nd = (10.0 * l(0) > l(1)) ? 2 : 1;
+        lio_quality_.n_degenerate_dirs = nd;
+        Eigen::Vector3d eta = npca.eigenvectors().col(0);
+        lio_quality_.eta[0] = eta(0); lio_quality_.eta[1] = eta(1); lio_quality_.eta[2] = eta(2);
+        if (nd == 2)
         {
-          lio_quality_.n_projected++;
-          // project both solution and imu-vec onto this eigenvector
-          Eigen::Matrix<double, 6, 1> ev = evecs.col(k).real();
-          double lidar_proj = ev.dot(sol6);
-          double imu_proj   = ev.dot(vec6);
-          // replace lidar contribution with imu prediction along this direction
-          sol6 += (imu_proj - lidar_proj) * ev;
+          Eigen::Vector3d eta2 = npca.eigenvectors().col(1);
+          lio_quality_.eta2[0] = eta2(0); lio_quality_.eta2[1] = eta2(1); lio_quality_.eta2[2] = eta2(2);
+        }
+        lio_quality_.eta_v = eta.dot(state_.vel_end);
+      }
+    }
+
+    // motion prior（L1 兜底，可选）：退化方向恒速先验，由 config 控制。
+    if (config_setting_.motion_prior_en_ && lio_quality_.degenerate_dir)
+    {
+      const double v_max = config_setting_.motion_prior_v_max_;
+      const double sigma = std::max(config_setting_.motion_prior_sigma_, 1e-3);
+      const double inv_s2 = 1.0 / (sigma * sigma);
+      const int nd = lio_quality_.n_degenerate_dirs;
+      V3D eta(lio_quality_.eta[0], lio_quality_.eta[1], lio_quality_.eta[2]);
+      V3D eta2(lio_quality_.eta2[0], lio_quality_.eta2[1], lio_quality_.eta2[2]);
+
+      if (!prev_eta_valid_)
+      {
+        for (int d = 0; d < nd; d++)
+        {
+          Eigen::Vector3d e = (d == 0) ? eta : eta2;
+          prev_eta_vel_[d] = e.dot(state_.vel_end);
+        }
+        prev_eta_valid_ = true;
+      }
+
+      for (int d = 0; d < nd; d++)
+      {
+        Eigen::Vector3d e = (d == 0) ? eta : eta2;
+        double s = e.dot(state_.vel_end);
+        double target = prev_eta_vel_[d];
+        if (target > v_max) target = v_max;
+        if (target < -v_max) target = -v_max;
+        double meas_p = target - s;
+        H_T_H.block<3, 3>(7, 7) += (e * e.transpose()) * inv_s2;
+        HTz.block<3, 1>(7, 0) += e * (meas_p * inv_s2);
+        lio_quality_.prior_active = true;
+      }
+    }
+
+    /*** L2: Append photometric residuals to H_T_H and HTz (§5.5) ***/
+    n_photo_residuals_ = 0;
+    if (config_setting_.intensity_en_ && intensity_map_ &&
+        lio_quality_.degenerate_dir && intensity_sampled_points_ != nullptr)
+    {
+      auto* sampled_pts = static_cast<std::vector<IntensityPoint>*>(intensity_sampled_points_);
+      auto* photo_res   = static_cast<std::vector<PhotoResidual>*>(photo_residuals_);
+      if (sampled_pts && photo_res && !sampled_pts->empty())
+      {
+        // Re-compute photometric residuals with current state estimate
+        photo_res->clear();
+        intensity_map_->computeResiduals(*sampled_pts,
+                                         state_.rot_end, state_.pos_end,
+                                         extR_, extT_, *photo_res);
+        n_photo_residuals_ = (int)photo_res->size();
+
+        // Diagnostic accumulators
+        double sum_r = 0, sum_r2 = 0, sum_Rinv = 0, max_abs_r = 0;
+        double pho_HTH_trace = 0;
+        Eigen::Matrix<double, 6, 6> pho_HTH_block = Eigen::Matrix<double, 6, 6>::Zero();
+
+        for (int i = 0; i < n_photo_residuals_; i++)
+        {
+          const auto& pr = (*photo_res)[i];
+          Eigen::Matrix<double, 6, 1> JT = pr.J.transpose();
+          Eigen::Matrix<double, 6, 6> JTJ = JT * pr.R_inv * pr.J;
+          pho_HTH_block += JTJ;
+          H_T_H.block<6, 6>(0, 0) += JTJ;
+          HTz.block<6, 1>(0, 0) += JT * (pr.R_inv * pr.residual);
+
+          sum_r += pr.residual;
+          sum_r2 += pr.residual * pr.residual;
+          sum_Rinv += pr.R_inv;
+          if (std::abs(pr.residual) > max_abs_r) max_abs_r = std::abs(pr.residual);
+        }
+        pho_HTH_trace = pho_HTH_block.trace();
+        double geo_HTH_trace = (H_T_H.block<6,6>(0,0) - pho_HTH_block).trace();
+
+        static int pho_dbg = 0;
+        if (pho_dbg++ % 50 == 0 && n_photo_residuals_ > 0)
+        {
+          double mean_r = sum_r / n_photo_residuals_;
+          double std_r = std::sqrt(sum_r2 / n_photo_residuals_ - mean_r * mean_r);
+          printf("[L2_DIAG] n=%d mean_r=%.2f std_r=%.2f max_r=%.1f avg_Rinv=%.4f "
+                 "pho_HTH_tr=%.1f geo_HTH_tr=%.1f ratio=%.4f iter=%d\n",
+                 n_photo_residuals_, mean_r, std_r, max_abs_r,
+                 sum_Rinv / n_photo_residuals_,
+                 pho_HTH_trace, geo_HTH_trace,
+                 (geo_HTH_trace > 0) ? pho_HTH_trace / geo_HTH_trace : -1.0,
+                 lio_quality_.iters);
         }
       }
-      solution.block<6, 1>(0, 0) = sol6;
     }
-    // --- end degeneracy projection ---
+
+    /*** L3: Append BIEVR height-map geometric residuals ***/
+    // 全段施加：高度残差约束墙面起伏（轴向+环向），与几何残差（径向）互补，
+    // 实测全段施加时前段速度更准（1.1 vs 2.2 m/s）。之前的停滞是"沿 eta 速度
+    // 钳制"在非退化段误判方向所致，已改为钳制总速度幅值。
+    n_height_residuals_ = 0;
+    if (config_setting_.height_en_ && intensity_map_ && height_sampled_points_ != nullptr)
+    {
+      auto* hpts = static_cast<std::vector<IntensityPoint>*>(height_sampled_points_);
+      auto* hres = static_cast<std::vector<PhotoResidual>*>(height_residuals_);
+      if (hpts && hres && !hpts->empty())
+      {
+        hres->clear();
+        V3D eta_h(lio_quality_.eta[0], lio_quality_.eta[1], lio_quality_.eta[2]);
+        intensity_map_->computeHeightResiduals(*hpts, eta_h, state_.rot_end, state_.pos_end,
+                                               extR_, extT_, *hres);
+        n_height_residuals_ = (int)hres->size();
+
+        double h_sum_r = 0, h_sum_r2 = 0;
+        double h_HTH_tr = 0;
+        Eigen::Matrix<double, 6, 6> h_HTH_block = Eigen::Matrix<double, 6, 6>::Zero();
+        for (int i = 0; i < n_height_residuals_; i++)
+        {
+          const auto& pr = (*hres)[i];
+          Eigen::Matrix<double, 6, 1> JT = pr.J.transpose();
+          Eigen::Matrix<double, 6, 6> JTJ = JT * pr.R_inv * pr.J;
+          h_HTH_block += JTJ;
+          H_T_H.block<6, 6>(0, 0) += JTJ;
+          HTz.block<6, 1>(0, 0) += JT * (pr.R_inv * pr.residual);
+          h_sum_r += pr.residual;
+          h_sum_r2 += pr.residual * pr.residual;
+        }
+        h_HTH_tr = h_HTH_block.trace();
+        double geo_HTH_tr = (H_T_H.block<6, 6>(0, 0) - h_HTH_block).trace();
+
+        static int hdbg = 0;
+        if (hdbg++ % 50 == 0 && n_height_residuals_ > 0)
+        {
+          double h_mean = h_sum_r / n_height_residuals_;
+          double h_std = std::sqrt(h_sum_r2 / n_height_residuals_ - h_mean * h_mean);
+          printf("[L3_HEIGHT] n=%d mean_r=%.4f std_r=%.4f h_HTH_tr=%.1f geo_HTH_tr=%.1f ratio=%.4f\n",
+                 n_height_residuals_, h_mean, h_std, h_HTH_tr, geo_HTH_tr,
+                 (geo_HTH_tr > 0) ? h_HTH_tr / geo_HTH_tr : -1.0);
+        }
+      }
+    }
+
+    /*** Iterative Kalman Filter Update（全状态：几何 + motion prior + photometric） ***/
+    MD(DIM_STATE, DIM_STATE) &&K_1 = (H_T_H + state_.cov.inverse()).inverse();
+    G = K_1 * H_T_H;
+    auto vec = state_propagat - state_;
+    VD(DIM_STATE)
+    solution = K_1 * HTz + vec - G * vec;
+
+    // 可选：退化期冻结 eta 向加计偏置，避免不可观 ba 持续喂给跑飞。
+    // (freeze_ba 已移除：它阻断了 L2 强度位置观测通过 ESIKF 交叉协方差 P_{p,ba}
+    // 反向校正加速度计偏置的通道，导致 b_{a,η} 无法被修正、速度持续被 IMU 积分污染。
+    // 现让 bias_a / gravity 随 ESIKF 自然更新，由几何+强度联合约束决定。)
+
+    // NOTE: Old degeneracy-aware projection (replace lidar solution with IMU
+    // prediction along degenerate eigenvectors of Info) was REMOVED per
+    // design_lio_intensity_degeneracy.md §4.5 — semantically incorrect because
+    // IMU prediction itself diverges after heading reversal. L1 motion prior
+    // (above) provides the correct mechanism.
+    lio_quality_.n_projected = 0;
 
     int minRow, minCol;
     state_ += solution;
+    // gravity 模长约束：gravity 是自由 3 维向量（16-18），EKF 更新后模长会漂移，
+    // 导致重力补偿错误并泄漏到轴向速度（重力轴向分量 + 姿态误差 → 加速度积分错误）。
+    // 归一化到 9.81 保持物理模长不变。
+    if (state_.gravity.norm() > 1e-6)
+      state_.gravity = state_.gravity.normalized() * G_m_s2;
     auto rot_add = solution.block<3, 1>(0, 0);
     auto t_add = solution.block<3, 1>(3, 0);
     if ((rot_add.norm() * 57.3 < 0.01) && (t_add.norm() * 100 < 0.015)) { flg_EKF_converged = true; }
@@ -583,6 +786,49 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat)
     }
     lio_quality_.iters = iterCount + 1;
     if (EKF_stop_flg) break;
+  }
+
+  /*** L1: update prev_eta_vel_ with converged velocity for next frame's prior ***/
+  if (lio_quality_.degenerate_dir && prev_eta_valid_)
+  {
+    V3D e1(lio_quality_.eta[0], lio_quality_.eta[1], lio_quality_.eta[2]);
+    prev_eta_vel_[0] = e1.dot(state_.vel_end);
+    if (lio_quality_.n_degenerate_dirs == 2)
+    {
+      V3D e2(lio_quality_.eta2[0], lio_quality_.eta2[1], lio_quality_.eta2[2]);
+      prev_eta_vel_[1] = e2.dot(state_.vel_end);
+    }
+  }
+
+  /*** L1: degeneracy frame counter + covariance clamping (§4.4) ***/
+  if (lio_quality_.degenerate_dir)
+    degen_frame_cnt_++;
+  else
+    degen_frame_cnt_ = 0;
+
+  if (config_setting_.motion_prior_en_ && lio_quality_.degenerate_dir &&
+      degen_frame_cnt_ > config_setting_.motion_prior_cov_clamp_n_)
+  {
+    // Clamp pos (indices 3-5) and vel (indices 7-9) covariance along each eta direction
+    auto clamp_cov_along = [&](const V3D& eta, int idx, double max_var) {
+      Eigen::Matrix3d P = state_.cov.block<3,3>(idx, idx);
+      double var_eta = eta.dot(P * eta);
+      if (var_eta > max_var)
+      {
+        // P_new = P - (var_eta - max_var) * eta * eta^T
+        P -= (var_eta - max_var) * (eta * eta.transpose());
+        state_.cov.block<3,3>(idx, idx) = P;
+      }
+    };
+    V3D e1(lio_quality_.eta[0], lio_quality_.eta[1], lio_quality_.eta[2]);
+    clamp_cov_along(e1, 3, config_setting_.motion_prior_cov_max_pos_);  // pos
+    clamp_cov_along(e1, 7, config_setting_.motion_prior_cov_max_vel_);  // vel
+    if (lio_quality_.n_degenerate_dirs == 2)
+    {
+      V3D e2(lio_quality_.eta2[0], lio_quality_.eta2[1], lio_quality_.eta2[2]);
+      clamp_cov_along(e2, 3, config_setting_.motion_prior_cov_max_pos_);
+      clamp_cov_along(e2, 7, config_setting_.motion_prior_cov_max_vel_);
+    }
   }
 
   // double t2 = omp_get_wtime();
