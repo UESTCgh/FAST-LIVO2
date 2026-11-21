@@ -99,7 +99,7 @@ vio_quality:
   tracked_min: 60
   inlier_min: 40
   inlier_ratio_min: 0.5
-  mean_err_max: 15.0
+  mean_err_max: 10.0
   max_iters: 10
 
 lio_quality:

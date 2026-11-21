@@ -27,9 +27,6 @@ which is included as part of this source code package.
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
 
-// Forward declaration for intensity map (L2)
-class VoxelIntensityMap;
-
 #define VOXELMAP_HASH_P 116101
 #define VOXELMAP_MAX_N 10000000000
 
@@ -49,15 +46,6 @@ struct LioQuality {
   double eigs[6] = {0, 0, 0, 0, 0, 0};      // 全部特征值（升序）
   double min_evec[6] = {0, 0, 0, 0, 0, 0};  // 最小特征值对应特征向量 [rot(3), pos(3)]
   int n_projected = 0;         // 本帧被 IMU 预测替代的方向数（最后一次迭代）
-
-  // 退化方向（法线 PCA，用于 motion prior / L2 强度残差）
-  double npca_eigs[3] = {0, 0, 0};  // A = sum(n n^T) 的特征值（升序）
-  double eta[3] = {0, 0, 0};        // 主退化方向（世界系）
-  double eta2[3] = {0, 0, 0};       // 次退化方向（仅 ndirs==2 时有效）
-  double eta_v = 0.0;               // 当前速度沿 eta 的投影
-  int n_degenerate_dirs = 0;        // 0 / 1 / 2
-  bool degenerate_dir = false;      // 法线 PCA 判定为退化
-  bool prior_active = false;        // 本帧 motion prior 是否触发
 
   int iters = 0;               // 实际迭代次数
 };
@@ -81,22 +69,6 @@ typedef struct VoxelMapConfig
   int half_map_size;
 
   double degenerate_eig_thresh_ = 0.1;
-
-  // motion prior（退化兜底，见 design_lio_intensity_degeneracy.md L1）
-  bool motion_prior_en_ = false;          // 总开关
-  double motion_prior_v_max_ = 2.0;       // 沿 eta 的软速度上限 [m/s]
-  double motion_prior_sigma_ = 0.2;       // 触发时的先验噪声 [m/s]
-  double motion_prior_eig_ratio_ = 0.05;  // 退化判据：λ1 < ratio·λ3
-  bool motion_prior_freeze_ba_ = false;   // 退化期冻结 eta 向加计偏置
-  int motion_prior_min_eff_ = 20;         // 法线 PCA 所需最少匹配平面数
-  int motion_prior_cov_clamp_n_ = 50;     // 退化持续 N 帧后开始限幅
-  double motion_prior_cov_max_pos_ = 1.0; // 沿 eta 的位置方差上限 [m²]
-  double motion_prior_cov_max_vel_ = 0.5; // 沿 eta 的速度方差上限 [(m/s)²]
-
-  // L2 强度残差（见 design_lio_intensity_degeneracy.md L2）
-  bool intensity_en_ = false;             // 总开关，false 时行为与当前完全一致
-  // L3 BIEVR 高度图几何残差
-  bool height_en_ = false;
 } VoxelMapConfig;
 
 typedef struct PointToPlane
@@ -267,24 +239,6 @@ public:
 
   // quality
   LioQuality lio_quality_;
-
-  // L1: degeneracy duration counter for covariance clamping
-  int degen_frame_cnt_ = 0;
-  // L1: previous converged velocity along eta (for constant-velocity prior)
-  double prev_eta_vel_[2] = {0.0, 0.0}; // [primary, secondary] degenerate direction
-  bool prev_eta_valid_ = false;
-
-  // L2: intensity map (owned, created when intensity_en_ is true)
-  // Full types (IntensityPoint, PhotoResidual) live in intensity_map.h;
-  // the vectors are allocated/accessed only from .cpp files that include it.
-  std::shared_ptr<VoxelIntensityMap> intensity_map_;
-  void* intensity_sampled_points_ = nullptr; // -> std::vector<IntensityPoint>*
-  void* photo_residuals_ = nullptr;          // -> std::vector<PhotoResidual>*
-  int n_photo_residuals_ = 0;
-  // L3: BIEVR height-map geometric residual
-  void* height_sampled_points_ = nullptr;    // -> std::vector<IntensityPoint>*
-  void* height_residuals_ = nullptr;         // -> std::vector<PhotoResidual>*
-  int n_height_residuals_ = 0;
 
   VoxelMapManager(VoxelMapConfig &config_setting, std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &voxel_map)
       : config_setting_(config_setting), voxel_map_(voxel_map)

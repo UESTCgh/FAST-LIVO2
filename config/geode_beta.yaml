@@ -59,32 +59,6 @@ lio:
   max_points_num: 50
   layer_init_num: [5, 5, 5, 5, 5]
   degenerate_eig_thresh: 0.6
-  # L1 退化兜底（design_lio_intensity_degeneracy.md §4）
-  motion_prior_en: false
-  motion_prior_v_max: 2.0          # 沿退化方向的软速度上限 [m/s]
-  motion_prior_sigma: 0.05         # 先验噪声 [m/s]（越小约束越强）
-  motion_prior_eig_ratio: 0.05     # 退化判据：λ1 < ratio·λ3
-  motion_prior_freeze_ba: false     # 退化期冻结 eta 向加计偏置
-  motion_prior_min_eff: 20         # 法线 PCA 最少匹配平面数
-  motion_prior_cov_clamp_n: 50     # 退化持续 N 帧后开始限幅
-  motion_prior_cov_max_pos: 1.0    # 沿 eta 的位置方差上限 [m²]
-  motion_prior_cov_max_vel: 0.5    # 沿 eta 的速度方差上限 [(m/s)²]
-  # L2 强度残差（design_lio_intensity_degeneracy.md §5）
-  intensity_en: false              # L2 强度残差（关闭，验证纯几何）
-  height_en: false                  # L3 高度图（实验性，Ouster 上不稳定）
-  intensity:
-    voxel_size: 0.5                # 强度图体素边长 [m]
-    pixel_size: 0.05               # 体素内像素分辨率 [m]
-    point_leaf: 0.1                # 强度点下采样 [m]
-    top_k_voxels: 100              # map-informed 选择 top-K 体素
-    max_range: 30.0                # 远距剔除 [m]
-    min_range: 1.5                 # 近距伪影剔除 [m]
-    min_range_weight: 0.5          # w = min(weight, 1/range)
-    sigma_pho: 50.0               # 光度残差噪声（reflectivity clip 后 std≈100）
-    lambda_pho: 1.0                # 相对几何残差的权重
-    line_filter_en: true           # 逐 ring 去条带
-    brightness_window: 21          # 亮度归一化窗口
-    max_voxels: 200000             # LRU 上限
 
 local_map:
   map_sliding_en: false
@@ -101,7 +75,7 @@ publish:
   cloud_body: false
 
 evo:
-  seq_name: "shield8_geo"
+  seq_name: "geode_tunnel4_beta"
   pose_output_en: true
 
 pcd_save:

@@ -139,9 +139,6 @@ void LIVMapper::readParameters(ros::NodeHandle &nh)
   nh.param<int>   ("vio_quality/max_iters",        vio_max_iters_,        10);
 
   p_pre->blind_sqr = p_pre->blind * p_pre->blind;
-
-  // L2 intensity config
-  loadIntensityConfig(nh, intensity_config_);
 }
 
 void LIVMapper::initializeComponents() 
@@ -188,20 +185,6 @@ void LIVMapper::initializeComponents()
   if (!exposure_estimate_en) p_imu->disable_exposure_est();
 
   slam_mode_ = (img_en && lidar_en) ? LIVO : imu_en ? ONLY_LIO : ONLY_LO;
-
-  // L2/L3: create intensity+height map if enabled
-  if (intensity_config_.enable || intensity_config_.height_en)
-  {
-    voxelmap_manager->intensity_map_ = std::make_shared<VoxelIntensityMap>(intensity_config_);
-    // Allocate opaque storage for sampled points and residuals
-    voxelmap_manager->intensity_sampled_points_ = new std::vector<IntensityPoint>();
-    voxelmap_manager->photo_residuals_ = new std::vector<PhotoResidual>();
-    voxelmap_manager->height_sampled_points_ = new std::vector<IntensityPoint>();
-    voxelmap_manager->height_residuals_ = new std::vector<PhotoResidual>();
-    ROS_INFO("\033[1;32m[L2/L3] Intensity+Height map enabled: voxel=%.2fm pixel=%.3fm topK=%d height=%d\033[0m",
-             intensity_config_.voxel_size, intensity_config_.pixel_size, intensity_config_.top_k_voxels,
-             (int)intensity_config_.height_en);
-  }
 }
 
 void LIVMapper::initializeFiles() 
@@ -235,7 +218,6 @@ void LIVMapper::initializeFiles()
     fout_lioq << "t,eff,mean_abs,rmse,max_abs,iters,n_proj,lio_ok,"
                  "eig0,eig1,eig2,eig3,eig4,eig5,"
                  "evec0_r0,evec0_r1,evec0_r2,evec0_p0,evec0_p1,evec0_p2,"
-                 "npca0,npca1,npca2,eta0,eta1,eta2,eta_v,ndirs,degen_dir,prior,"
                  "px,py,pz\n";
   }
 }
@@ -443,56 +425,6 @@ void LIVMapper::handleLIO()
 
   double t1 = omp_get_wtime();
 
-  /*** L2: preprocess intensity + select SCAN points for photometric residuals ***/
-  if (intensity_config_.enable && voxelmap_manager->intensity_map_)
-  {
-    auto* sampled_pts = static_cast<std::vector<IntensityPoint>*>(voxelmap_manager->intensity_sampled_points_);
-    static std::vector<float> intensities_norm;
-    voxelmap_manager->intensity_map_->preprocessIntensity(feats_down_body, intensities_norm);
-
-    // Select scan points that fall into informative map voxels along η
-    const auto& lq = voxelmap_manager->lio_quality_;
-    int n_ivox = voxelmap_manager->intensity_map_->numVoxels();
-    if (lq.degenerate_dir && lq.n_degenerate_dirs > 0 && sampled_pts)
-    {
-      V3D eta(lq.eta[0], lq.eta[1], lq.eta[2]);
-      V3D eta2(lq.eta2[0], lq.eta2[1], lq.eta2[2]);
-      // NEW: selectScanPoints — scan-to-map (not map-pixel self-reference)
-      voxelmap_manager->intensity_map_->selectScanPoints(
-        feats_down_body, intensities_norm,
-        eta, lq.n_degenerate_dirs, eta2,
-        _state.rot_end, _state.pos_end,
-        extR, extT, *sampled_pts);
-      static int dbg_cnt = 0;
-      if (dbg_cnt++ % 100 == 0)
-        printf("[L2_DBG] ivox=%d selected=%zu degen=%d ndirs=%d\n",
-               n_ivox, sampled_pts->size(), lq.degenerate_dir?1:0, lq.n_degenerate_dirs);
-    }
-    else if (sampled_pts)
-    {
-      sampled_pts->clear();
-      static int dbg_cnt2 = 0;
-      if (dbg_cnt2++ % 200 == 0)
-        printf("[L2_DBG] ivox=%d NOT_SAMPLING degen=%d ndirs=%d\n",
-               n_ivox, lq.degenerate_dir?1:0, lq.n_degenerate_dirs);
-    }
-  }
-
-  /*** L3: select ALL scan points for BIEVR height-map geometric residuals ***/
-  if (intensity_config_.height_en && voxelmap_manager->intensity_map_)
-  {
-    auto* height_pts = static_cast<std::vector<IntensityPoint>*>(voxelmap_manager->height_sampled_points_);
-    if (height_pts)
-    {
-      voxelmap_manager->intensity_map_->selectHeightPoints(
-        feats_down_body, _state.rot_end, _state.pos_end,
-        extR, extT, *height_pts);
-      static int hdbg = 0;
-      if (hdbg++ % 100 == 0)
-        printf("[L3_HEIGHT] selected=%zu\n", height_pts->size());
-    }
-  }
-
   StatesGroup state_backup = _state;
 
   voxelmap_manager->StateEstimation(state_propagat);
@@ -543,9 +475,6 @@ void LIVMapper::handleLIO()
     for (int k = 0; k < 6; k++) fout_lioq << "," << q.eigs[k];
     fout_lioq << std::fixed << std::setprecision(4);
     for (int k = 0; k < 6; k++) fout_lioq << "," << q.min_evec[k];
-    for (int k = 0; k < 3; k++) fout_lioq << "," << q.npca_eigs[k];
-    for (int k = 0; k < 3; k++) fout_lioq << "," << q.eta[k];
-    fout_lioq << "," << q.eta_v << "," << q.n_degenerate_dirs << "," << (q.degenerate_dir ? 1 : 0) << "," << (q.prior_active ? 1 : 0);
     fout_lioq << "," << _state.pos_end[0] << "," << _state.pos_end[1] << "," << _state.pos_end[2] << "\n";
   }
 
@@ -600,44 +529,10 @@ void LIVMapper::handleLIO()
     voxelmap_manager->pv_list_[i].var = var;
   }
   // voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
-  if (lio_ok)
+  if (lio_ok) 
   {
     voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
     std::cout << "[ LIO ] Update Voxel Map" << std::endl;
-
-    /*** L2/L3: update intensity+height map with corrected pose ***/
-    if ((intensity_config_.enable || intensity_config_.height_en) && voxelmap_manager->intensity_map_)
-    {
-      static std::vector<float> intensities_for_update;
-      voxelmap_manager->intensity_map_->preprocessIntensity(feats_down_body, intensities_for_update);
-      // 退化方向 η（轴向），符号相对上一帧固定，避免特征向量 ± 符号翻转破坏高度图累积
-      const auto& lq_ = voxelmap_manager->lio_quality_;
-      static Eigen::Vector3d prev_eta(1, 0, 0);
-      Eigen::Vector3d eta_upd(lq_.eta[0], lq_.eta[1], lq_.eta[2]);
-      if (eta_upd.norm() < 1e-6) eta_upd = prev_eta;
-      if (eta_upd.dot(prev_eta) < 0) eta_upd = -eta_upd;
-      prev_eta = eta_upd;
-      // 滑窗关键帧：每隔 keyframe_dist 距离重新冻结位姿 + 清空强度图，覆盖全程。
-      // 段内 updateMap 用冻结位姿（段开始）累积，使强度图不随当前(偏快)位姿漂移，
-      // 光度残差对段内速度偏差敏感；段短则 bias_a 累积小、关键帧位姿相对准确。
-      static bool frozen_once = false;
-      static V3D last_frozen_pos = V3D::Zero();
-      const double keyframe_dist = 8.0;  // 关键帧间距 [m]
-      if (!frozen_once || (lq_.degenerate_dir &&
-                           (_state.pos_end - last_frozen_pos).norm() > keyframe_dist))
-      {
-        voxelmap_manager->intensity_map_->setFrozenPose(_state.rot_end, _state.pos_end);
-        voxelmap_manager->intensity_map_->clearMap();
-        last_frozen_pos = _state.pos_end;
-        frozen_once = true;
-        printf("[L2_FREEZE] 重新冻结 @ pos=(%.1f,%.1f,%.1f)\n",
-               _state.pos_end[0], _state.pos_end[1], _state.pos_end[2]);
-      }
-      voxelmap_manager->intensity_map_->updateMap(
-        feats_down_body, intensities_for_update, eta_upd,
-        _state.rot_end, _state.pos_end,
-        extR, extT, voxelmap_manager->voxel_map_);
-    }
   }
   _pv_list = voxelmap_manager->pv_list_;
   
