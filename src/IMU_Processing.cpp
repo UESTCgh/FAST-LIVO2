@@ -12,6 +12,8 @@ which is included as part of this source code package.
 
 #include "IMU_Processing.h"
 
+#include <algorithm>
+
 ImuProcess::ImuProcess() : Eye3d(M3D::Identity()),
                            Zero3d(0, 0, 0), b_first_frame(true), imu_need_init(true)
 {
@@ -144,6 +146,14 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, StatesGroup &state_inout, in
   state_inout.gravity = -mean_acc / mean_acc.norm() * G_m_s2;
   state_inout.rot_end = Eye3d; // Exp(mean_acc.cross(V3D(0, 0, -1 / scale_gravity)));
   state_inout.bias_g = Zero3d; // mean_gyr;
+  if (bievr_deskew_)
+  {
+    state_inout.bias_g = mean_gyr;
+    state_inout.cov.topLeftCorner<6, 6>().setIdentity();
+    state_inout.cov.block<3, 3>(7, 7).setIdentity();
+    state_inout.cov.block<3, 3>(10, 10) = 0.0001 * M3D::Identity();
+    state_inout.cov.block<3, 3>(13, 13) = 0.001 * M3D::Identity();
+  }
 
   last_imu = meas.imu.back();
 }
@@ -246,6 +256,8 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
   const double &imu_beg_time = v_imu.front()->header.stamp.toSec();
   const double &imu_end_time = v_imu.back()->header.stamp.toSec();
   const double prop_beg_time = last_prop_end_time;
+  const bool bievr_deskew = bievr_deskew_ && lidar_meas.lio_vio_flg == LIO;
+  const double point_time_base = bievr_deskew ? lidar_meas.lidar_frame_beg_time : prop_beg_time;
   // printf("[ IMU ] undistort input size: %zu \n", lidar_meas.pcl_proc_cur->points.size());
   // printf("[ IMU ] IMU data sequence size: %zu \n", meas.imu.size());
   // printf("[ IMU ] lidar_scan_index_now: %d \n", lidar_meas.lidar_scan_index_now);
@@ -278,7 +290,11 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
     pcl_wait_proc.resize(lidar_meas.pcl_proc_cur->points.size());
     pcl_wait_proc = *(lidar_meas.pcl_proc_cur);
     lidar_meas.lidar_scan_index_now = 0;
-    IMUpose.push_back(set_pose6d(0.0, acc_s_last, angvel_last, state_inout.vel_end, state_inout.pos_end, state_inout.rot_end));
+    if (bievr_deskew && !std::is_sorted(pcl_wait_proc.begin(), pcl_wait_proc.end(), time_list))
+      std::sort(pcl_wait_proc.begin(), pcl_wait_proc.end(), time_list);
+    const double first_pose_time = bievr_deskew ? prop_beg_time - point_time_base : 0.0;
+    IMUpose.push_back(set_pose6d(first_pose_time, acc_s_last, angvel_last, state_inout.vel_end,
+                               state_inout.pos_end, state_inout.rot_end));
   }
 
   // printf("[ IMU ] pcl_wait_proc size: %zu \n", pcl_wait_proc.points.size());
@@ -324,21 +340,28 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
   case LIO:
   case VIO:
     dt = 0;
-    for (int i = 0; i < v_imu.size() - 1; i++)
+    for (std::size_t i = 0; i + (bievr_deskew ? 0 : 1) < v_imu.size(); ++i)
     {
-      auto head = v_imu[i];
-      auto tail = v_imu[i + 1];
+      const bool scan_end_interval = bievr_deskew && i + 1 == v_imu.size();
+      const auto &head = v_imu[i];
+      const auto &tail = scan_end_interval ? head : v_imu[i + 1];
+      const auto &sample_head = scan_end_interval && i > 0 ? v_imu[i - 1] : head;
 
-      if (tail->header.stamp.toSec() < prop_beg_time) continue;
+      const double head_time = head->header.stamp.toSec();
+      const double tail_time = tail->header.stamp.toSec();
+      const double interval_end = scan_end_interval ? prop_end_time : tail_time;
+      if (interval_end < prop_beg_time) continue;
 
-      angvel_avr << 0.5 * (head->angular_velocity.x + tail->angular_velocity.x), 0.5 * (head->angular_velocity.y + tail->angular_velocity.y),
-          0.5 * (head->angular_velocity.z + tail->angular_velocity.z);
+      angvel_avr << 0.5 * (sample_head->angular_velocity.x + tail->angular_velocity.x),
+          0.5 * (sample_head->angular_velocity.y + tail->angular_velocity.y),
+          0.5 * (sample_head->angular_velocity.z + tail->angular_velocity.z);
 
       // angvel_avr<<tail->angular_velocity.x, tail->angular_velocity.y,
       // tail->angular_velocity.z;
 
-      acc_avr << 0.5 * (head->linear_acceleration.x + tail->linear_acceleration.x), 0.5 * (head->linear_acceleration.y + tail->linear_acceleration.y),
-          0.5 * (head->linear_acceleration.z + tail->linear_acceleration.z);
+      acc_avr << 0.5 * (sample_head->linear_acceleration.x + tail->linear_acceleration.x),
+          0.5 * (sample_head->linear_acceleration.y + tail->linear_acceleration.y),
+          0.5 * (sample_head->linear_acceleration.z + tail->linear_acceleration.z);
 
       // cout<<"angvel_avr: "<<angvel_avr.transpose()<<endl;
       // cout<<"acc_avr: "<<acc_avr.transpose()<<endl;
@@ -352,22 +375,28 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
       angvel_avr -= state_inout.bias_g;
       acc_avr = acc_avr * G_m_s2 / mean_acc.norm() - state_inout.bias_a;
 
-      if (head->header.stamp.toSec() < prop_beg_time)
+      if (bievr_deskew)
+      {
+        dt = interval_end - std::max(head_time, prop_beg_time);
+        if (dt <= 0.0) continue;
+        offs_t = interval_end - point_time_base;
+      }
+      else if (head_time < prop_beg_time)
       {
         // printf("00 \n");
-        dt = tail->header.stamp.toSec() - last_prop_end_time;
-        offs_t = tail->header.stamp.toSec() - prop_beg_time;
+        dt = tail_time - last_prop_end_time;
+        offs_t = tail_time - prop_beg_time;
       }
       else if (i != v_imu.size() - 2)
       {
         // printf("11 \n");
-        dt = tail->header.stamp.toSec() - head->header.stamp.toSec();
-        offs_t = tail->header.stamp.toSec() - prop_beg_time;
+        dt = tail_time - head_time;
+        offs_t = tail_time - prop_beg_time;
       }
       else
       {
         // printf("22 \n");
-        dt = prop_end_time - head->header.stamp.toSec();
+        dt = prop_end_time - head_time;
         offs_t = prop_end_time - prop_beg_time;
       }
 
@@ -496,22 +525,25 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
     auto it_pcl = pcl_wait_proc.points.end() - 1;
     M3D extR_Ri(Lid_rot_to_IMU.transpose() * state_inout.rot_end.transpose());
     V3D exrR_extT(Lid_rot_to_IMU.transpose() * Lid_offset_to_IMU);
+    bool all_points_deskewed = false;
     for (auto it_kp = IMUpose.end() - 1; it_kp != IMUpose.begin(); it_kp--)
     {
       auto head = it_kp - 1;
       auto tail = it_kp;
+      const auto &interval_motion = bievr_deskew ? *tail : *head;
       R_imu << MAT_FROM_ARRAY(head->rot);
-      acc_imu << VEC_FROM_ARRAY(head->acc);
+      acc_imu << VEC_FROM_ARRAY(interval_motion.acc);
       // cout<<"head imu acc: "<<acc_imu.transpose()<<endl;
       vel_imu << VEC_FROM_ARRAY(head->vel);
       pos_imu << VEC_FROM_ARRAY(head->pos);
-      angvel_avr << VEC_FROM_ARRAY(head->gyr);
+      angvel_avr << VEC_FROM_ARRAY(interval_motion.gyr);
 
       // printf("head->offset_time: %lf \n", head->offset_time);
       // printf("it_pcl->curvature: %lf pt dt: %lf \n", it_pcl->curvature,
       // it_pcl->curvature / double(1000) - head->offset_time);
 
-      for (; it_pcl->curvature / double(1000) > head->offset_time; it_pcl--)
+      const bool first_interval = bievr_deskew && head == IMUpose.begin();
+      for (; it_pcl->curvature / double(1000) > head->offset_time || first_interval; it_pcl--)
       {
         dt = it_pcl->curvature / double(1000) - head->offset_time;
 
@@ -530,8 +562,13 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
         it_pcl->y = P_compensate(1);
         it_pcl->z = P_compensate(2);
 
-        if (it_pcl == pcl_wait_proc.points.begin()) break;
+        if (it_pcl == pcl_wait_proc.points.begin())
+        {
+          all_points_deskewed = bievr_deskew;
+          break;
+        }
       }
+      if (all_points_deskewed) break;
     }
     pcl_out = pcl_wait_proc;
     pcl_wait_proc.clear();
@@ -565,6 +602,7 @@ void ImuProcess::Process2(LidarMeasureGroup &lidar_meas, StatesGroup &stat, Poin
     imu_need_init = true;
 
     last_imu = meas.imu.back();
+    if (bievr_deskew_) last_prop_end_time = pcl_end_time;
 
     if (init_iter_num > MAX_INI_COUNT)
     {

@@ -19,7 +19,7 @@ which is included as part of this source code package.
 #include <nav_msgs/Odometry.h>
 #include <utils/so3_math.h>
 #include <fstream>
-const bool time_list(PointType &x, PointType &y) { return (x.curvature < y.curvature); }
+inline bool time_list(const PointType &x, const PointType &y) { return x.curvature < y.curvature; }
 
 /// *************IMU Process and undistortion
 class ImuProcess
@@ -41,6 +41,7 @@ public:
   void set_acc_bias_cov(const V3D &b_a);
   void set_inv_expo_cov(const double &inv_expo);
   void set_imu_init_frame_num(const int &num);
+  void enableBievrDeskew() { bievr_deskew_ = true; }
   void disable_imu();
   void disable_gravity_est();
   void disable_bias_est();
@@ -85,6 +86,7 @@ private:
   bool gravity_est_en = true;
   bool ba_bg_est_en = true;
   bool exposure_estimate_en = true;
+  bool bievr_deskew_ = false;
 };
 typedef std::shared_ptr<ImuProcess> ImuProcessPtr;
 #endif

@@ -30,9 +30,9 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm|aarch64|ARM|AARCH64)")
   endif()
   add_definitions(-DARM_ARCH)
 else()
-  # x86-64 (Intel/AMD) optimizations
-  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -march=native -mtune=native -funroll-loops") #-flto
-  message(STATUS "Using general x86 optimizations: -O3 -march=native -mtune=native -funroll-loops") 
+  # Match the Eigen alignment used by the system PCL libraries on x86-64.
+  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -mtune=native -funroll-loops")
+  message(STATUS "Using general x86 optimizations: -O3 -mtune=native -funroll-loops")
   add_definitions(-DX86_ARCH)
 endif()
 
@@ -109,6 +109,7 @@ find_package(OpenCV 4.2.0 EXACT REQUIRED)
 
 find_package(Sophus REQUIRED)
 find_package(Boost REQUIRED COMPONENTS thread)
+find_package(TBB REQUIRED)
 
 set(Sophus_LIBRARIES libSophus.so)
 
@@ -130,7 +131,8 @@ include_directories(
 
 # Add libraries
 add_library(vio src/vio.cpp src/frame.cpp src/visual_point.cpp)
-add_library(lio src/voxel_map.cpp)
+add_library(lio src/voxel_map.cpp src/bievr/bievr_registration.cpp src/bievr/bievr_update.cpp)
+target_link_libraries(lio PRIVATE TBB::tbb)
 add_library(pre src/preprocess.cpp)
 add_library(imu_proc src/IMU_Processing.cpp)
 add_library(laser_mapping src/LIVMapper.cpp)

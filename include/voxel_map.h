@@ -17,6 +17,7 @@ which is included as part of this source code package.
 #include <Eigen/Dense>
 #include <fstream>
 #include <math.h>
+#include <memory>
 #include <mutex>
 #include <omp.h>
 #include <pcl/common/io.h>
@@ -31,6 +32,8 @@ which is included as part of this source code package.
 #define VOXELMAP_MAX_N 10000000000
 
 static int voxel_plane_id = 0;
+
+namespace fast_livo { class BievrRegistration; }
 
 struct LioQuality {
   int eff = 0;                 // effct_feat_num_
@@ -69,6 +72,13 @@ typedef struct VoxelMapConfig
   int half_map_size;
 
   double degenerate_eig_thresh_ = 0.1;
+  bool use_bievr_ = false;
+  double bievr_voxel_size_ = 0.5;
+  double bievr_pixel_size_ = 0.05;
+  double bievr_fine_voxel_size_ = 0.1;
+  double bievr_huber_delta_ = 0.1;
+  int bievr_max_voxels_ = 1500000;
+  int bievr_informed_voxels_ = 300;
 } VoxelMapConfig;
 
 typedef struct PointToPlane
@@ -207,7 +217,7 @@ void loadVoxelConfig(ros::NodeHandle &nh, VoxelMapConfig &voxel_config);
 class VoxelMapManager
 {
 public:
-  VoxelMapManager() = default;
+  VoxelMapManager() = delete;
   VoxelMapConfig config_setting_;
   int current_frame_id_ = 0;
   ros::Publisher voxel_map_pub_;
@@ -240,16 +250,13 @@ public:
   // quality
   LioQuality lio_quality_;
 
-  VoxelMapManager(VoxelMapConfig &config_setting, std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &voxel_map)
-      : config_setting_(config_setting), voxel_map_(voxel_map)
-  {
-    current_frame_id_ = 0;
-    feats_undistort_.reset(new PointCloudXYZI());
-    feats_down_body_.reset(new PointCloudXYZI());
-    feats_down_world_.reset(new PointCloudXYZI());
-  };
+  VoxelMapManager(const VoxelMapConfig &config_setting, const std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &voxel_map);
+  ~VoxelMapManager();
 
   void StateEstimation(StatesGroup &state_propagat);
+  bool UpdateBievrState(const StatesGroup &state_propagat, int min_measurements);
+  void UpdateBievrMap(const StatesGroup &state);
+  PointCloudXYZI EffectiveWorldPoints() const;
   void TransformLidar(const Eigen::Matrix3d rot, const Eigen::Vector3d t, const PointCloudXYZI::Ptr &input_cloud,
                       pcl::PointCloud<pcl::PointXYZI>::Ptr &trans_cloud);
 
@@ -269,6 +276,8 @@ public:
   void clearMemOutOfMap(const int& x_max,const int& x_min,const int& y_max,const int& y_min,const int& z_max,const int& z_min );
 
 private:
+  std::unique_ptr<fast_livo::BievrRegistration> bievr_registration_;
+  std::vector<V3D> bievr_effective_points_;
   void GetUpdatePlane(const VoxelOctoTree *current_octo, const int pub_max_voxel_layer, std::vector<VoxelPlane> &plane_list);
 
   void pubSinglePlane(visualization_msgs::MarkerArray &plane_pub, const std::string plane_ns, const VoxelPlane &single_plane, const float alpha,

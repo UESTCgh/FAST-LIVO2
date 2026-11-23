@@ -2,16 +2,19 @@ common:
   img_topic: "/left_camera/image"
   lid_topic: "/livox/lidar"
   imu_topic: "/livox/imu"
-  img_en: 1
+  img_en: 0
   lidar_en: 1
   ros_driver_bug_fix: false
 
 extrin_calib:
-  # gamma 平台 T_IMU_LiDAR（LiDAR→IMU）：p_imu = R * p_lidar + t
-  extrinsic_T: [0.049258, -0.012500, 0.026946]
-  extrinsic_R: [0.999620, 0.027463, 0.002445,
-                -0.027517, 0.999299, 0.025398,
-                -0.001746, -0.025456, 0.999674]
+  # LiDAR -> 内置 Livox IMU：p_imu = R * p_lidar + t，平移单位 m。
+  # 与 common/imu_topic=/livox/imu 成套使用；来源：BIEVR-LIO
+  # config/sensor_configs/{gamma,mars}.yaml，两者使用相同 Avia 内置 IMU 标定。
+  # GEODE gamma_config.yaml 的另一组外参对应外置 /imu/data，不能混用。
+  extrinsic_T: [0.04165, 0.02326, -0.0284]
+  extrinsic_R: [1.0, 0.0, 0.0,
+                0.0, 1.0, 0.0,
+                0.0, 0.0, 1.0]
   # gamma 平台 T_LiDAR_CamL（相机→LiDAR）
   Rcl: [0.030481734, 0.010470226, 0.999480484,
         -0.999506201, 0.007952445, 0.030399211,
@@ -61,6 +64,9 @@ lio:
   max_points_num: 50
   layer_init_num: [5, 5, 5, 5, 5]
   degenerate_eig_thresh: 0.1
+  bievr:
+    voxel_size: 1.0
+    pixel_size: 0.07
   # L1 退化兜底（关闭——纯几何 + COIN-LIO 退化检测）
   motion_prior_en: false
   motion_prior_v_max: 2.0

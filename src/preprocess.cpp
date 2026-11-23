@@ -21,7 +21,7 @@ Preprocess::Preprocess() : feature_enabled(0), lidar_type(AVIA), blind(0.01), po
   N_SCANS = 6;
   group_size = 8;
   disA = 0.01;
-  disA = 0.1; // B?
+  disB = 0.1;
   p2l_ratio = 225;
   limit_maxmid = 6.25;
   limit_midmin = 6.25;
@@ -754,10 +754,11 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, vector<orgtype> &t
   }
   uint head = 0;
 
-  while (types[head].range < blind_sqr)
+  while (head < types.size() && types[head].range < blind_sqr)
   {
     head++;
   }
+  if (head >= types.size()) { return; }
 
   // Surf
   plsize2 = (plsize > group_size) ? (plsize - group_size) : 0;
@@ -991,11 +992,18 @@ void Preprocess::pub_func(PointCloudXYZI &pl, const ros::Time &ct)
 
 int Preprocess::plane_judge(const PointCloudXYZI &pl, vector<orgtype> &types, uint i_cur, uint &i_nex, Eigen::Vector3d &curr_direct)
 {
+  const size_t point_count = std::min(pl.size(), types.size());
+  if (i_cur >= point_count || point_count - i_cur < static_cast<size_t>(group_size))
+  {
+    i_nex = point_count > 0 ? point_count - 1 : 0;
+    curr_direct.setZero();
+    return 0;
+  }
   double group_dis = disA * types[i_cur].range + disB;
   group_dis = group_dis * group_dis;
   // i_nex = i_cur;
 
-  double two_dis;
+  double two_dis = 0.0;
   vector<double> disarr;
   disarr.reserve(20);
 
@@ -1011,7 +1019,14 @@ int Preprocess::plane_judge(const PointCloudXYZI &pl, vector<orgtype> &types, ui
 
   for (;;)
   {
-    if ((i_cur >= pl.size()) || (i_nex >= pl.size())) break;
+    // A plane needs an actual end point: give_feature() marks [i_cur, i_nex]
+    // inclusively. Returning success with i_nex == size would corrupt the heap.
+    if (i_nex >= point_count)
+    {
+      i_nex = point_count - 1;
+      curr_direct.setZero();
+      return 0;
+    }
 
     if (types[i_nex].range < blind_sqr)
     {

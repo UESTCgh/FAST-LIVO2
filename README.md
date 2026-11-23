@@ -104,6 +104,28 @@ roslaunch fast_livo mapping_avia.launch
 rosbag play YOUR_DOWNLOADED.bag
 ```
 
+### 4.1 GEODE Gamma tunnels
+
+The Gamma launch runs pure LiDAR–IMU odometry with the BIEVR residual in FAST-LIVO2. Start it and play the Gamma tunnel bag in a second terminal.
+
+```bash
+roslaunch fast_livo mapping_gamma.launch rviz:=false seq_name:=Shield_tunnel4_gamma_bievr
+rosbag play ~/data/GEODE/Shield_tunnel4_gamma.bag --topics /livox/lidar /livox/imu
+```
+
+For the original point-to-plane residual, add `lio_bievr:=false` and use a distinct `seq_name`. FAST-LIVO2 writes TUM trajectories to `Log/result/<seq_name>.txt`.
+
+For comparison with the standalone BIEVR-LIO backend, build the BIEVR-LIO ROS1 package with Livox CustomMsg support and load its workspace before FAST-LIVO2.
+
+```bash
+source ~/catkin_ws/devel/setup.bash
+source ~/fastlivo2_ws/devel/setup.bash --extend
+roslaunch fast_livo mapping_gamma.launch bievr:=true
+```
+
+In a second terminal, play the bag with `rosbag play BAG --topics /livox/lidar /livox/imu`. RViz shows the accumulated cloud and odometry in the `odom` frame. This backend publishes `/bievr_lio/points/registered` and `/bievr_lio/odom`.
+
+For offline processing, pass the absolute bag path with `bievr:=true bag:=/path/to/BAG rviz:=false`. Use `bievr_params:=/path/to/params.yaml` to set BIEVR-LIO options such as `debug.trajectory_path`.
 
 ## 5. License
 

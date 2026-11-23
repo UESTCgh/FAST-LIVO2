@@ -27,6 +27,8 @@ LIVMapper::LIVMapper(ros::NodeHandle &nh)
   readParameters(nh);
   VoxelMapConfig voxel_config;
   loadVoxelConfig(nh, voxel_config);
+  if (voxel_config.use_bievr_ && (img_en || !imu_en || !lidar_en))
+    throw std::invalid_argument("lio/residual_type=bievr requires LiDAR and IMU with common/img_en=0");
 
   visual_sub_map.reset(new PointCloudXYZI());
   feats_undistort.reset(new PointCloudXYZI());
@@ -150,26 +152,29 @@ void LIVMapper::initializeComponents()
   voxelmap_manager->extT_ << VEC_FROM_ARRAY(extrinT);
   voxelmap_manager->extR_ << MAT_FROM_ARRAY(extrinR);
 
-  if (!vk::camera_loader::loadFromRosNs("laserMapping", vio_manager->cam)) throw std::runtime_error("Camera model not correctly specified.");
+  if (!voxelmap_manager->config_setting_.use_bievr_)
+  {
+    if (!vk::camera_loader::loadFromRosNs("laserMapping", vio_manager->cam)) throw std::runtime_error("Camera model not correctly specified.");
 
-  vio_manager->grid_size = grid_size;
-  vio_manager->patch_size = patch_size;
-  vio_manager->outlier_threshold = outlier_threshold;
-  vio_manager->setImuToLidarExtrinsic(extT, extR);
-  vio_manager->setLidarToCameraExtrinsic(cameraextrinR, cameraextrinT);
-  vio_manager->state = &_state;
-  vio_manager->state_propagat = &state_propagat;
-  vio_manager->max_iterations = max_iterations;
-  vio_manager->img_point_cov = IMG_POINT_COV;
-  vio_manager->normal_en = normal_en;
-  vio_manager->inverse_composition_en = inverse_composition_en;
-  vio_manager->raycast_en = raycast_en;
-  vio_manager->grid_n_width = grid_n_width;
-  vio_manager->grid_n_height = grid_n_height;
-  vio_manager->patch_pyrimid_level = patch_pyrimid_level;
-  vio_manager->exposure_estimate_en = exposure_estimate_en;
-  vio_manager->colmap_output_en = colmap_output_en;
-  vio_manager->initializeVIO();
+    vio_manager->grid_size = grid_size;
+    vio_manager->patch_size = patch_size;
+    vio_manager->outlier_threshold = outlier_threshold;
+    vio_manager->setImuToLidarExtrinsic(extT, extR);
+    vio_manager->setLidarToCameraExtrinsic(cameraextrinR, cameraextrinT);
+    vio_manager->state = &_state;
+    vio_manager->state_propagat = &state_propagat;
+    vio_manager->max_iterations = max_iterations;
+    vio_manager->img_point_cov = IMG_POINT_COV;
+    vio_manager->normal_en = normal_en;
+    vio_manager->inverse_composition_en = inverse_composition_en;
+    vio_manager->raycast_en = raycast_en;
+    vio_manager->grid_n_width = grid_n_width;
+    vio_manager->grid_n_height = grid_n_height;
+    vio_manager->patch_pyrimid_level = patch_pyrimid_level;
+    vio_manager->exposure_estimate_en = exposure_estimate_en;
+    vio_manager->colmap_output_en = colmap_output_en;
+    vio_manager->initializeVIO();
+  }
 
   p_imu->set_extrinsic(extT, extR);
   p_imu->set_gyr_cov_scale(V3D(gyr_cov, gyr_cov, gyr_cov));
@@ -179,6 +184,7 @@ void LIVMapper::initializeComponents()
   p_imu->set_acc_bias_cov(V3D(0.0001, 0.0001, 0.0001));
   p_imu->set_imu_init_frame_num(imu_int_frame);
 
+  if (voxelmap_manager->config_setting_.use_bievr_) p_imu->enableBievrDeskew();
   if (!imu_en) p_imu->disable_imu();
   if (!gravity_est_en) p_imu->disable_gravity_est();
   if (!ba_bg_est_en) p_imu->disable_bias_est();
@@ -398,7 +404,7 @@ void LIVMapper::handleLIO()
            << _state.pos_end.transpose() << " " << _state.vel_end.transpose() << " " << _state.bias_g.transpose() << " "
            << _state.bias_a.transpose() << " " << V3D(_state.inv_expo_time, 0, 0).transpose() << endl;
            
-  if (feats_undistort->empty() || (feats_undistort == nullptr)) 
+  if (!feats_undistort || feats_undistort->empty())
   {
     std::cout << "[ LIO ]: No point!!!" << std::endl;
     return;
@@ -406,18 +412,23 @@ void LIVMapper::handleLIO()
 
   double t0 = omp_get_wtime();
 
-  downSizeFilterSurf.setInputCloud(feats_undistort);
-  downSizeFilterSurf.filter(*feats_down_body);
+  const bool use_bievr = voxelmap_manager->config_setting_.use_bievr_;
+  if (!use_bievr || !dense_map_en)
+  {
+    downSizeFilterSurf.setInputCloud(feats_undistort);
+    downSizeFilterSurf.filter(*feats_down_body);
+  }
   
   double t_down = omp_get_wtime();
 
   feats_down_size = feats_down_body->points.size();
   voxelmap_manager->feats_down_body_ = feats_down_body;
-  transformLidar(_state.rot_end, _state.pos_end, feats_down_body, feats_down_world);
+  if (!use_bievr) transformLidar(_state.rot_end, _state.pos_end, feats_down_body, feats_down_world);
   voxelmap_manager->feats_down_world_ = feats_down_world;
   voxelmap_manager->feats_down_size_ = feats_down_size;
   
-  if (!lidar_map_inited) 
+  const bool bootstrap_bievr = use_bievr && !lidar_map_inited;
+  if (!use_bievr && !lidar_map_inited)
   {
     lidar_map_inited = true;
     voxelmap_manager->BuildVoxelMap();
@@ -427,15 +438,28 @@ void LIVMapper::handleLIO()
 
   StatesGroup state_backup = _state;
 
-  voxelmap_manager->StateEstimation(state_propagat);
+  bool lio_ok = true;
+  if (use_bievr)
+  {
+    if (!bootstrap_bievr)
+      lio_ok = voxelmap_manager->UpdateBievrState(state_propagat, th_eff_min_);
+  }
+  else
+  {
+    voxelmap_manager->StateEstimation(state_propagat);
+  }
 
   const auto& q = voxelmap_manager->lio_quality_;
 
   static int lio_frame_count = 0;
   lio_frame_count++;
 
-  bool lio_ok = true;
-  if (lio_frame_count > 10) {
+  if (use_bievr && !bootstrap_bievr)
+  {
+    // The prior stabilizes weak BIEVR directions. Keep the spectrum as a diagnostic.
+    lio_ok &= q.mean_abs_res <= th_mean_abs_max_ && q.rmse_res <= th_rmse_max_;
+  }
+  else if (!use_bievr && lio_frame_count > 10) {
     lio_ok &= (q.eff >= th_eff_min_);
     lio_ok &= (q.mean_abs_res <= th_mean_abs_max_);
     // 可选项按需启用：
@@ -464,7 +488,7 @@ void LIVMapper::handleLIO()
   } else {
       _state = state_backup;                    // 状态回滚
   }
-  _pv_list = voxelmap_manager->pv_list_;
+  if (!use_bievr) _pv_list = voxelmap_manager->pv_list_;
 
   if (lio_quality_log_en_ && fout_lioq.is_open())
   {
@@ -517,28 +541,38 @@ void LIVMapper::handleLIO()
 
   double t3 = omp_get_wtime();
 
-  PointCloudXYZI::Ptr world_lidar(new PointCloudXYZI());
-  transformLidar(_state.rot_end, _state.pos_end, feats_down_body, world_lidar);
-  for (size_t i = 0; i < world_lidar->points.size(); i++) 
+  if (use_bievr)
   {
-    voxelmap_manager->pv_list_[i].point_w << world_lidar->points[i].x, world_lidar->points[i].y, world_lidar->points[i].z;
-    M3D point_crossmat = voxelmap_manager->cross_mat_list_[i];
-    M3D var = voxelmap_manager->body_cov_list_[i];
-    var = (_state.rot_end * extR) * var * (_state.rot_end * extR).transpose() +
-          (-point_crossmat) * _state.cov.block<3, 3>(0, 0) * (-point_crossmat).transpose() + _state.cov.block<3, 3>(3, 3);
-    voxelmap_manager->pv_list_[i].var = var;
+    if (lio_ok)
+    {
+      voxelmap_manager->UpdateBievrMap(_state);
+      lidar_map_inited = true;
+    }
   }
-  // voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
-  if (lio_ok) 
+  else
   {
-    voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
-    std::cout << "[ LIO ] Update Voxel Map" << std::endl;
+    PointCloudXYZI::Ptr world_lidar(new PointCloudXYZI());
+    transformLidar(_state.rot_end, _state.pos_end, feats_down_body, world_lidar);
+    for (size_t i = 0; i < world_lidar->points.size(); i++)
+    {
+      voxelmap_manager->pv_list_[i].point_w << world_lidar->points[i].x, world_lidar->points[i].y, world_lidar->points[i].z;
+      M3D point_crossmat = voxelmap_manager->cross_mat_list_[i];
+      M3D var = voxelmap_manager->body_cov_list_[i];
+      var = (_state.rot_end * extR) * var * (_state.rot_end * extR).transpose() +
+            (-point_crossmat) * _state.cov.block<3, 3>(0, 0) * (-point_crossmat).transpose() + _state.cov.block<3, 3>(3, 3);
+      voxelmap_manager->pv_list_[i].var = var;
+    }
+    if (lio_ok)
+    {
+      voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
+      std::cout << "[ LIO ] Update Voxel Map" << std::endl;
+    }
+    _pv_list = voxelmap_manager->pv_list_;
   }
-  _pv_list = voxelmap_manager->pv_list_;
-  
+
   double t4 = omp_get_wtime();
 
-  if(voxelmap_manager->config_setting_.map_sliding_en)
+  if (!use_bievr && voxelmap_manager->config_setting_.map_sliding_en)
   {
     voxelmap_manager->mapSliding();
   }
@@ -580,8 +614,8 @@ void LIVMapper::handleLIO()
     publish_frame_body(pubLaserCloudFull_body, t);
   }
   publish_frame_world(pubLaserCloudFullRes, vio_manager);
-  if (pub_effect_point_en) publish_effect_world(pubLaserCloudEffect, voxelmap_manager->ptpl_list_);
-  if (voxelmap_manager->config_setting_.is_pub_plane_map_) voxelmap_manager->pubVoxelMap();
+  if (pub_effect_point_en && (!use_bievr || lio_ok)) publish_effect_world(pubLaserCloudEffect);
+  if (!use_bievr && voxelmap_manager->config_setting_.is_pub_plane_map_) voxelmap_manager->pubVoxelMap();
   publish_path(pubPath);
   publish_mavros(mavros_pose_publisher);
 
@@ -1040,7 +1074,13 @@ bool LIVMapper::sync_packages(LidarMeasureGroup &meas)
       if (meas.lidar->points.size() <= 1) return false;
 
       meas.lidar_frame_beg_time = lid_header_time_buffer.front();                                                // generate lidar_frame_beg_time
-      meas.lidar_frame_end_time = meas.lidar_frame_beg_time + meas.lidar->points.back().curvature / double(1000); // calc lidar scan end time
+      float scan_duration_ms = meas.lidar->back().curvature;
+      if (voxelmap_manager->config_setting_.use_bievr_)
+      {
+        const auto &points = meas.lidar->points;
+        scan_duration_ms = std::max_element(points.begin(), points.end(), time_list)->curvature;
+      }
+      meas.lidar_frame_end_time = meas.lidar_frame_beg_time + scan_duration_ms / 1000.0;
       meas.pcl_proc_cur = meas.lidar;
       lidar_pushed = true;                                                                                       // flag
     }
@@ -1471,18 +1511,10 @@ void LIVMapper::publish_visual_sub_map(const ros::Publisher &pubSubVisualMap)
   }
 }
 
-void LIVMapper::publish_effect_world(const ros::Publisher &pubLaserCloudEffect, const std::vector<PointToPlane> &ptpl_list)
+void LIVMapper::publish_effect_world(const ros::Publisher &pubLaserCloudEffect)
 {
-  int effect_feat_num = ptpl_list.size();
-  PointCloudXYZI::Ptr laserCloudWorld(new PointCloudXYZI(effect_feat_num, 1));
-  for (int i = 0; i < effect_feat_num; i++)
-  {
-    laserCloudWorld->points[i].x = ptpl_list[i].point_w_[0];
-    laserCloudWorld->points[i].y = ptpl_list[i].point_w_[1];
-    laserCloudWorld->points[i].z = ptpl_list[i].point_w_[2];
-  }
   sensor_msgs::PointCloud2 laserCloudFullRes3;
-  pcl::toROSMsg(*laserCloudWorld, laserCloudFullRes3);
+  pcl::toROSMsg(voxelmap_manager->EffectiveWorldPoints(), laserCloudFullRes3);
   laserCloudFullRes3.header.stamp = ros::Time::now();
   laserCloudFullRes3.header.frame_id = "camera_init";
   pubLaserCloudEffect.publish(laserCloudFullRes3);

@@ -51,6 +51,21 @@ void loadVoxelConfig(ros::NodeHandle &nh, VoxelMapConfig &voxel_config)
   nh.param<int>("local_map/half_map_size", voxel_config.half_map_size, 100);
   nh.param<double>("local_map/sliding_thresh", voxel_config.sliding_thresh, 8);
   nh.param<double>("lio/degenerate_eig_thresh", voxel_config.degenerate_eig_thresh_, 0.1);
+
+  std::string residual_type;
+  nh.param<std::string>("lio/residual_type", residual_type, "point_to_plane");
+  if (residual_type != "point_to_plane" && residual_type != "bievr")
+    throw std::invalid_argument("lio/residual_type must be point_to_plane or bievr");
+  voxel_config.use_bievr_ = residual_type == "bievr";
+  if (voxel_config.use_bievr_)
+  {
+    nh.param<double>("lio/bievr/voxel_size", voxel_config.bievr_voxel_size_, 0.5);
+    nh.param<double>("lio/bievr/pixel_size", voxel_config.bievr_pixel_size_, 0.05);
+    nh.param<double>("lio/bievr/fine_voxel_size", voxel_config.bievr_fine_voxel_size_, 0.1);
+    nh.param<double>("lio/bievr/huber_delta", voxel_config.bievr_huber_delta_, 0.1);
+    nh.param<int>("lio/bievr/max_voxels", voxel_config.bievr_max_voxels_, 1500000);
+    nh.param<int>("lio/bievr/informed_voxels", voxel_config.bievr_informed_voxels_, 300);
+  }
 }
 
 void VoxelOctoTree::init_plane(const std::vector<pointWithVar> &points, VoxelPlane *plane)

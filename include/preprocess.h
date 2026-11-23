@@ -56,6 +56,7 @@ struct orgtype
   orgtype()
   {
     range = 0;
+    dista = 0;
     edj[Prev] = Nr_nor;
     edj[Next] = Nr_nor;
     ftype = Nor;
