@@ -17,6 +17,11 @@ public:
                  CameraLoader load_camera);
   ~MultiCameraVio();
 
+  bool eventTiming() const;
+  std::vector<double> eventTimes() const;
+  bool updateAtEvent(double stamp, const LioQuality &lidar_quality,
+                     std::vector<pointWithVar> &points, const std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &planes,
+                     StatesGroup &state);
   void subscribe(ros::NodeHandle &nh);
   bool takeObservations(double previous_scan_end, double scan_end, double imu_watermark);
   void update(double scan_end, const V3D &angular_velocity, const LioQuality &lidar_quality,
@@ -26,6 +31,9 @@ public:
   void appendLandmarks(pcl::PointCloud<pcl::PointNormal> &output) const;
 
 private:
+  bool updateBatch(double reference_time, const V3D &angular_velocity, const LioQuality &lidar_quality,
+                   std::vector<pointWithVar> &points, const std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &planes,
+                   StatesGroup &state, std::size_t begin, std::size_t end);
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

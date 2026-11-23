@@ -19,6 +19,7 @@ which is included as part of this source code package.
 #include <nav_msgs/Odometry.h>
 #include <utils/so3_math.h>
 #include <fstream>
+#include <functional>
 inline bool time_list(const PointType &x, const PointType &y) { return x.curvature < y.curvature; }
 
 /// *************IMU Process and undistortion
@@ -47,8 +48,16 @@ public:
   void disable_gravity_est();
   void disable_bias_est();
   void disable_exposure_est();
-  void Process2(LidarMeasureGroup &lidar_meas, StatesGroup &stat, PointCloudXYZI::Ptr cur_pcl_un_);
-  void UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_inout, PointCloudXYZI &pcl_out);
+  using ObservationUpdate = std::function<bool(double, StatesGroup &)>;
+  struct TimedObservation
+  {
+    double stamp;
+    ObservationUpdate update;
+  };
+  void Process2(LidarMeasureGroup &lidar_meas, StatesGroup &stat, PointCloudXYZI::Ptr cur_pcl_un_,
+                const std::vector<TimedObservation> &observations = {});
+  void UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_inout, PointCloudXYZI &pcl_out,
+                    const std::vector<TimedObservation> &observations = {});
 
   ofstream fout_imu;
   double IMU_mean_acc_norm;

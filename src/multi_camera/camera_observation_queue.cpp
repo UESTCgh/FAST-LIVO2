@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <stdexcept>
 #include <tuple>
 #include <utility>
@@ -13,12 +14,14 @@
 namespace fast_livo
 {
 CameraObservationQueue::CameraObservationQueue(std::size_t camera_count, double association_window_s,
-                                               double camera_wait_s, std::size_t per_camera_limit)
+                                               double camera_wait_s, std::size_t per_camera_limit, double duplicate_window_s)
     : association_window_s_(association_window_s), camera_wait_s_(camera_wait_s),
-      per_camera_limit_(per_camera_limit), cameras_(camera_count)
+      per_camera_limit_(per_camera_limit), duplicate_window_s_(duplicate_window_s),
+      last_kept_stamp_(camera_count, -std::numeric_limits<double>::infinity()), cameras_(camera_count)
 {
   if (!std::isfinite(association_window_s_) || association_window_s_ < 0.0 ||
-      !std::isfinite(camera_wait_s_) || camera_wait_s_ < association_window_s_ || per_camera_limit_ == 0)
+      !std::isfinite(camera_wait_s_) || camera_wait_s_ < association_window_s_ || per_camera_limit_ == 0 ||
+      !std::isfinite(duplicate_window_s_) || duplicate_window_s_ < 0.0)
     throw std::invalid_argument("Invalid camera association window, wait, or queue capacity");
 }
 
@@ -36,7 +39,24 @@ bool CameraObservationQueue::push(std::size_t camera_id, double stamp, cv::Mat i
   });
   if (position != queue.end() && position->stamp == stamp)
   {
-    if (position->sequence <= sequence) return false;
+    if (position->sequence < sequence) return false;
+    if (position->sequence == sequence)
+    {
+      if (duplicate_window_s_ == 0.0) return false;
+      // Some publishers reuse sequence numbers. Break exact header ties by
+      // decoded content so reversed callback order keeps the same image.
+      const auto &existing = position->image;
+      const auto shape = std::make_tuple(image.rows, image.cols, image.type());
+      const auto existing_shape = std::make_tuple(existing.rows, existing.cols, existing.type());
+      if (shape > existing_shape) return false;
+      if (shape == existing_shape)
+      {
+        int order = 0;
+        for (int row = 0; row < image.rows && order == 0; ++row)
+          order = std::memcmp(image.ptr(row), existing.ptr(row), image.cols * image.elemSize());
+        if (order >= 0) return false;
+      }
+    }
     *position = {stamp, sequence, std::move(image)};
     return true;
   }
@@ -115,6 +135,34 @@ bool CameraObservationQueue::takeForInterval(double previous_scan_end, double sc
   }
   processed_through_ = window_end;
 
+  std::sort(observations.begin(), observations.end(), [](const CameraObservation &left, const CameraObservation &right) {
+    return std::tie(left.stamp, left.camera_id) < std::tie(right.stamp, right.camera_id);
+  });
+  return true;
+}
+bool CameraObservationQueue::takeEvents(double previous_scan_end, double scan_end, double sensor_watermark,
+                                       std::vector<CameraObservation> &observations)
+{
+  observations.clear();
+  if (!std::isfinite(scan_end) || !std::isfinite(sensor_watermark) || sensor_watermark < scan_end + camera_wait_s_)
+    return false;
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (scan_end <= processed_through_) return true;
+  for (std::size_t camera_id = 0; camera_id < cameras_.size(); ++camera_id)
+  {
+    auto &queue = cameras_[camera_id];
+    auto &last_kept = last_kept_stamp_[camera_id];
+    while (!queue.empty() && queue.front().stamp <= scan_end)
+    {
+      auto entry = std::move(queue.front());
+      queue.pop_front();
+      if (entry.stamp <= previous_scan_end || entry.stamp - last_kept <= duplicate_window_s_) continue;
+      last_kept = entry.stamp;
+      observations.push_back({camera_id, entry.stamp, std::move(entry.image)});
+    }
+  }
+  processed_through_ = scan_end;
   std::sort(observations.begin(), observations.end(), [](const CameraObservation &left, const CameraObservation &right) {
     return std::tie(left.stamp, left.camera_id) < std::tie(right.stamp, right.camera_id);
   });

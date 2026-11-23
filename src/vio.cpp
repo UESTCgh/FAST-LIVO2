@@ -13,8 +13,11 @@ which is included as part of this source code package.
 #include "vio.h"
 
 #include <Eigen/Cholesky>
+#include <array>
 #include <cmath>
 #include <limits>
+#include <numeric>
+#include <stdexcept>
 
 namespace
 {
@@ -30,6 +33,23 @@ bool patchInImage(const V2D &pixel, int width, int height, int margin)
   return pixel.allFinite() && pixel.x() >= margin && pixel.y() >= margin &&
          pixel.x() < width - margin && pixel.y() < height - margin;
 }
+
+double patchHuberCost(double rmse, double delta)
+{
+  return rmse <= delta ? 0.5 * rmse * rmse : delta * (rmse - 0.5 * delta);
+}
+
+double weightPatch(double squared_error, double delta, int patch_area, int patch_index, MatrixXd &jacobian, VectorXd &residual)
+{
+  const double rmse = std::sqrt(squared_error / patch_area);
+  if (rmse > delta)
+  {
+    const double sqrt_weight = std::sqrt(delta / rmse);
+    jacobian.middleRows(patch_index * patch_area, patch_area) *= sqrt_weight;
+    residual.segment(patch_index * patch_area, patch_area) *= sqrt_weight;
+  }
+  return patchHuberCost(rmse, delta);
+}
 } // namespace
 
 void VIOManager::setVIOQualityThresholds(int tracked_min,
@@ -43,6 +63,14 @@ void VIOManager::setVIOQualityThresholds(int tracked_min,
   vio_inlier_ratio_min_  = inlier_ratio_min;
   vio_mean_err_max_      = mean_err_max;
   vio_max_iters_         = max_iters;
+}
+
+void VIOManager::setRobustVisualOptions(double patch_huber_delta, double min_cost_reduction_ratio)
+{
+  if (!std::isfinite(patch_huber_delta) || !(min_cost_reduction_ratio >= 0.0 && min_cost_reduction_ratio < 1.0))
+    throw std::invalid_argument("VIO requires a finite patch Huber delta and a cost reduction ratio in [0, 1)");
+  patch_huber_delta_ = patch_huber_delta;
+  min_cost_reduction_ratio_ = min_cost_reduction_ratio;
 }
 
 VIOManager::VIOManager()
@@ -1477,6 +1505,10 @@ void VIOManager::updateStateInverse(cv::Mat img, int level)
 {
   if (total_points == 0) return;
   StatesGroup old_state = (*state);
+  const bool robust = patch_huber_delta_ > 0.0;
+  vector<unsigned char> initial_support(robust ? total_points : 0);
+  int initial_meas = 0;
+  double last_robust_cost = std::numeric_limits<double>::infinity();
   V2D pc;
   MD(1, 2) Jimg;
   MD(2, 3) Jdpi;
@@ -1496,12 +1528,16 @@ void VIOManager::updateStateInverse(cv::Mat img, int level)
   H_sub.resize(H_DIM, 6);
   H_sub.setZero();
 
-  for (int iteration = 0; iteration < max_iterations; iteration++)
+  for (int iteration = 0; iteration < max_iterations + robust; iteration++)
   {
     double t1 = omp_get_wtime();
     if (guard_visual_update_)
     {
-      if (!finiteVisualState(*state)) return;
+      if (!finiteVisualState(*state))
+      {
+        if (robust) *state = old_state;
+        return;
+      }
       z.setZero();
       H_sub.setZero();
     }
@@ -1509,6 +1545,7 @@ void VIOManager::updateStateInverse(cv::Mat img, int level)
     if (has_ref_patch_cache == false) precomputeReferencePatches(level);
     int n_meas = 0;
     float error = 0.0;
+    double robust_cost = 0.0;
     M3D Rwi(state->rot_end);
     V3D Pwi(state->pos_end);
     P_wi_hat << SKEW_SYM_MATRX(Pwi);
@@ -1519,6 +1556,7 @@ void VIOManager::updateStateInverse(cv::Mat img, int level)
 
     for (int i = 0; i < total_points; i++)
     {
+      if (robust && iteration > 0 && !initial_support[i]) continue;
       float patch_error = 0.0;
 
       const int scale = (1 << level);
@@ -1556,26 +1594,45 @@ void VIOManager::updateStateInverse(cv::Mat img, int level)
           MD(1, 3) J_dR = H_sub_inv.block<1, 3>(i * patch_size_total + x * patch_size + y, 0);
           MD(1, 3) J_dt = H_sub_inv.block<1, 3>(i * patch_size_total + x * patch_size + y, 3);
           JdR = J_dR * Rwi + J_dt * P_wi_hat * Rwi;
-          Jdt = J_dt * Rwi;
+          if (robust) Jdt = J_dt; // StatesGroup adds translation in world coordinates.
+          else Jdt = J_dt * Rwi;
           H_sub.block<1, 6>(i * patch_size_total + x * patch_size + y, 0) << JdR, Jdt;
           n_meas++;
         }
       }
       visual_submap->errors[i] = patch_error;
-      error += patch_error;
+      if (robust)
+      {
+        initial_support[i] = 1;
+        robust_cost += weightPatch(patch_error, patch_huber_delta_, patch_size_total, i, H_sub, z);
+      }
+      else error += patch_error;
     }
 
-    if (guard_visual_update_ && n_meas == 0) return;
-    error = error / n_meas;
+    if (robust)
+    {
+      if (iteration == 0) initial_meas = n_meas;
+      robust_cost /= std::max(1, n_meas / patch_size_total);
+    }
+    else
+    {
+      if (guard_visual_update_ && n_meas == 0) return;
+      error = error / n_meas;
+    }
 
     compute_jacobian_time += omp_get_wtime() - t1;
 
     double t3 = omp_get_wtime();
 
-    if (error <= last_error)
+    const bool evaluate_only = robust && (EKF_end || iteration == max_iterations);
+    const bool accept_iteration = robust ? n_meas > 0 && n_meas == initial_meas &&
+                                           std::isfinite(robust_cost) && robust_cost <= last_robust_cost :
+                                           error <= last_error;
+    if (accept_iteration)
     {
       old_state = (*state);
       last_error = error;
+      last_robust_cost = robust_cost;
 
       auto &&H_sub_T = H_sub.transpose();
       H_T_H.setZero();
@@ -1585,12 +1642,15 @@ void VIOManager::updateStateInverse(cv::Mat img, int level)
       auto &&HTz = H_sub_T * z;
       auto vec = (*state_propagat) - (*state);
       G.block<DIM_STATE, 6>(0, 0) = K_1.block<DIM_STATE, 6>(0, 0) * H_T_H.block<6, 6>(0, 0);
-      auto solution = -K_1.block<DIM_STATE, 6>(0, 0) * HTz + vec - G.block<DIM_STATE, 6>(0, 0) * vec.block<6, 1>(0, 0);
-      (*state) += solution;
-      auto &&rot_add = solution.block<3, 1>(0, 0);
-      auto &&t_add = solution.block<3, 1>(3, 0);
+      if (!evaluate_only)
+      {
+        auto solution = -K_1.block<DIM_STATE, 6>(0, 0) * HTz + vec - G.block<DIM_STATE, 6>(0, 0) * vec.block<6, 1>(0, 0);
+        (*state) += solution;
+        auto &&rot_add = solution.block<3, 1>(0, 0);
+        auto &&t_add = solution.block<3, 1>(3, 0);
 
-      if ((rot_add.norm() * 57.3f < 0.001f) && (t_add.norm() * 100.0f < 0.001f)) { EKF_end = true; }
+        if ((rot_add.norm() * 57.3f < 0.001f) && (t_add.norm() * 100.0f < 0.001f)) { EKF_end = true; }
+      }
     }
     else
     {
@@ -1600,9 +1660,9 @@ void VIOManager::updateStateInverse(cv::Mat img, int level)
 
     update_ekf_time += omp_get_wtime() - t3;
 
-    if (iteration == max_iterations - 1 || EKF_end) {
-      vio_iter_used_ = iteration + 1;
-      vio_last_error_ = last_error;   // last_error 是当前最优 error（每像素均值）
+    if (robust ? evaluate_only || !accept_iteration : iteration == max_iterations - 1 || EKF_end) {
+      if (!robust || iteration > 0) vio_iter_used_ = robust ? iteration : iteration + 1;
+      vio_last_error_ = robust ? last_robust_cost : last_error;
       break;
     }
   }
@@ -1612,6 +1672,13 @@ void VIOManager::updateState(cv::Mat img, int level)
 {
   if (total_points == 0) return;
   StatesGroup old_state = (*state);
+  const bool robust = patch_huber_delta_ > 0.0;
+  const bool ordered_reduction = deterministic_visual_reduction_;
+  vector<float> ordered_errors(ordered_reduction && !robust ? total_points : 0);
+  vector<double> ordered_robust_costs(ordered_reduction && robust ? total_points : 0);
+  vector<unsigned char> initial_support(robust ? total_points : 0);
+  int initial_meas = 0;
+  double last_robust_cost = std::numeric_limits<double>::infinity();
 
   VectorXd z;
   MatrixXd H_sub;
@@ -1624,12 +1691,16 @@ void VIOManager::updateState(cv::Mat img, int level)
   H_sub.resize(H_DIM, 7);
   H_sub.setZero();
 
-  for (int iteration = 0; iteration < max_iterations; iteration++)
+  for (int iteration = 0; iteration < max_iterations + robust; iteration++)
   {
     double t1 = omp_get_wtime();
     if (guard_visual_update_)
     {
-      if (!finiteVisualState(*state)) return;
+      if (!finiteVisualState(*state))
+      {
+        if (robust) *state = old_state;
+        return;
+      }
       z.setZero();
       H_sub.setZero();
     }
@@ -1641,17 +1712,21 @@ void VIOManager::updateState(cv::Mat img, int level)
     Jdp_dt = Rci * Rwi.transpose();
     
     float error = 0.0;
+    double robust_cost = 0.0;
     int n_meas = 0;
+    std::fill(ordered_errors.begin(), ordered_errors.end(), 0.0f);
+    std::fill(ordered_robust_costs.begin(), ordered_robust_costs.end(), 0.0);
     // int max_threads = omp_get_max_threads();
     // int desired_threads = std::min(max_threads, total_points);
     // omp_set_num_threads(desired_threads);
   
     #ifdef MP_EN
       omp_set_num_threads(MP_PROC_NUM);
-      #pragma omp parallel for reduction(+:error, n_meas)
+      #pragma omp parallel for reduction(+:error, robust_cost, n_meas)
     #endif
     for (int i = 0; i < total_points; i++)
     {
+      if (robust && iteration > 0 && !initial_support[i]) continue;
       // printf("thread is %d, i=%d, i address is %p\n", omp_get_thread_num(), i, &i);
       MD(1, 2) Jimg;
       MD(2, 3) Jdpi;
@@ -1729,11 +1804,34 @@ void VIOManager::updateState(cv::Mat img, int level)
         }
       }
       visual_submap->errors[i] = patch_error;
-      error += patch_error;
+      if (robust)
+      {
+        initial_support[i] = 1;
+        const double patch_cost = weightPatch(patch_error, patch_huber_delta_, patch_size_total, i, H_sub, z);
+        if (ordered_reduction) ordered_robust_costs[i] = patch_cost;
+        else robust_cost += patch_cost;
+      }
+      else if (ordered_reduction) ordered_errors[i] = patch_error;
+      else error += patch_error;
     }
 
-    if (guard_visual_update_ && n_meas == 0) return;
-    error = error / n_meas;
+    if (ordered_reduction)
+    {
+      // Keep the acceptance comparison independent of worker completion order.
+      if (robust) robust_cost = std::accumulate(ordered_robust_costs.begin(), ordered_robust_costs.end(), 0.0);
+      else error = std::accumulate(ordered_errors.begin(), ordered_errors.end(), 0.0f);
+    }
+
+    if (robust)
+    {
+      if (iteration == 0) initial_meas = n_meas;
+      robust_cost /= std::max(1, n_meas / patch_size_total);
+    }
+    else
+    {
+      if (guard_visual_update_ && n_meas == 0) return;
+      error = error / n_meas;
+    }
     
     compute_jacobian_time += omp_get_wtime() - t1;
 
@@ -1745,10 +1843,15 @@ void VIOManager::updateState(cv::Mat img, int level)
 
     double t3 = omp_get_wtime();
 
-    if (error <= last_error)
+    const bool evaluate_only = robust && (EKF_end || iteration == max_iterations);
+    const bool accept_iteration = robust ? n_meas > 0 && n_meas == initial_meas &&
+                                           std::isfinite(robust_cost) && robust_cost <= last_robust_cost :
+                                           error <= last_error;
+    if (accept_iteration)
     {
       old_state = (*state);
       last_error = error;
+      last_robust_cost = robust_cost;
 
       // K = (H.transpose() / img_point_cov * H + state->cov.inverse()).inverse() * H.transpose() / img_point_cov; auto
       // vec = (*state_propagat) - (*state); G = K*H;
@@ -1763,16 +1866,19 @@ void VIOManager::updateState(cv::Mat img, int level)
       // K = K_1.block<DIM_STATE,6>(0,0) * H_sub_T;
       auto vec = (*state_propagat) - (*state);
       G.block<DIM_STATE, 7>(0, 0) = K_1.block<DIM_STATE, 7>(0, 0) * H_T_H.block<7, 7>(0, 0);
-      MD(DIM_STATE, 1)
-      solution = -K_1.block<DIM_STATE, 7>(0, 0) * HTz + vec - G.block<DIM_STATE, 7>(0, 0) * vec.block<7, 1>(0, 0);
+      if (!evaluate_only)
+      {
+        MD(DIM_STATE, 1)
+        solution = -K_1.block<DIM_STATE, 7>(0, 0) * HTz + vec - G.block<DIM_STATE, 7>(0, 0) * vec.block<7, 1>(0, 0);
 
-      (*state) += solution;
-      auto &&rot_add = solution.block<3, 1>(0, 0);
-      auto &&t_add = solution.block<3, 1>(3, 0);
+        (*state) += solution;
+        auto &&rot_add = solution.block<3, 1>(0, 0);
+        auto &&t_add = solution.block<3, 1>(3, 0);
 
-      auto &&expo_add = solution.block<1, 1>(6, 0);
-      // if ((rot_add.norm() * 57.3f < 0.001f) && (t_add.norm() * 100.0f < 0.001f) && (expo_add.norm() < 0.001f)) EKF_end = true;
-      if ((rot_add.norm() * 57.3f < 0.001f) && (t_add.norm() * 100.0f < 0.001f))  EKF_end = true;
+        auto &&expo_add = solution.block<1, 1>(6, 0);
+        // if ((rot_add.norm() * 57.3f < 0.001f) && (t_add.norm() * 100.0f < 0.001f) && (expo_add.norm() < 0.001f)) EKF_end = true;
+        if ((rot_add.norm() * 57.3f < 0.001f) && (t_add.norm() * 100.0f < 0.001f))  EKF_end = true;
+      }
     }
     else
     {
@@ -1781,9 +1887,9 @@ void VIOManager::updateState(cv::Mat img, int level)
     }
 
     update_ekf_time += omp_get_wtime() - t3;
-    if (iteration == max_iterations - 1 || EKF_end) {
-      vio_iter_used_ = iteration + 1;
-      vio_last_error_ = last_error;   // last_error 是当前最优 error（每像素均值）
+    if (robust ? evaluate_only || !accept_iteration : iteration == max_iterations - 1 || EKF_end) {
+      if (!robust || iteration > 0) vio_iter_used_ = robust ? iteration : iteration + 1;
+      vio_last_error_ = robust ? last_robust_cost : last_error;
       break;
     }
   }
@@ -1886,33 +1992,180 @@ void VIOManager::dumpDataForColmap()
   cnt++;
 }
 
+float VIOManager::evaluateGuardedPatch(const cv::Mat &img, const V3D &camera_point, double exposure, int index, vector<float> &patch)
+{
+  if (!camera_point.allFinite() || camera_point.z() <= 0.0) return std::numeric_limits<float>::infinity();
+  const V2D pixel = cam->world2cam(camera_point);
+  const int level = inverse_composition_en ? 0 : visual_submap->search_levels[index];
+  if (!patchInImage(pixel, width, height, patch_size_half * (1 << level))) return std::numeric_limits<float>::infinity();
+
+  getImagePatch(img, pixel, patch.data(), level);
+  const float *current = patch.data() + level * patch_size_total;
+  const auto &reference = visual_submap->warp_patch[index];
+  const double reference_exposure = inverse_composition_en ? 1.0 : visual_submap->inv_expo_list[index];
+  const double current_exposure = inverse_composition_en ? 1.0 : exposure;
+  double sum_squared = 0.0;
+  for (int j = 0; j < patch_size_total; ++j)
+  {
+    const double residual = current_exposure * current[j] - reference_exposure * reference[j];
+    sum_squared += residual * residual;
+  }
+  return static_cast<float>(sum_squared);
+}
+
 void VIOManager::evaluateGuardedVisualResiduals(const cv::Mat &img)
 {
   // Search level is capped at two. getImagePatch writes into the requested level's block.
   vector<float> patch(3 * patch_size_total);
   for (int i = 0; i < total_points; ++i)
-  {
-    float &error = visual_submap->errors[i];
-    error = std::numeric_limits<float>::infinity();
-    const V3D camera_point = new_frame_->w2f(visual_submap->voxel_points[i]->pos_);
-    if (!camera_point.allFinite() || camera_point.z() <= 0.0) continue;
-    const V2D pixel = cam->world2cam(camera_point);
-    const int level = inverse_composition_en ? 0 : visual_submap->search_levels[i];
-    if (!patchInImage(pixel, width, height, patch_size_half * (1 << level))) continue;
+    visual_submap->errors[i] = evaluateGuardedPatch(img, new_frame_->w2f(visual_submap->voxel_points[i]->pos_),
+                                                  state->inv_expo_time, i, patch);
+}
 
-    getImagePatch(img, pixel, patch.data(), level);
-    const float *current = patch.data() + level * patch_size_total;
-    const auto &reference = visual_submap->warp_patch[i];
-    const double reference_exposure = inverse_composition_en ? 1.0 : visual_submap->inv_expo_list[i];
-    const double current_exposure = inverse_composition_en ? 1.0 : state->inv_expo_time;
-    double sum_squared = 0.0;
-    for (int j = 0; j < patch_size_total; ++j)
+bool VIOManager::evaluateRobustCost(const vector<float> &errors, VioQuality &quality) const
+{
+  const double lost_patch_cost = patchHuberCost(std::sqrt(outlier_threshold), patch_huber_delta_);
+  int prior_support = 0;
+  for (int i = 0; i < total_points; ++i)
+  {
+    if (!std::isfinite(robust_prior_errors_[i])) continue;
+    ++prior_support;
+    const double prior_cost = patchHuberCost(std::sqrt(double(robust_prior_errors_[i]) / patch_size_total), patch_huber_delta_);
+    quality.robust_cost_before += prior_cost;
+    const double error = errors[i];
+    if (std::isfinite(error))
     {
-      const double residual = current_exposure * current[j] - reference_exposure * reference[j];
-      sum_squared += residual * residual;
+      ++quality.robust_support;
+      quality.robust_cost_after += patchHuberCost(std::sqrt(error / patch_size_total), patch_huber_delta_);
     }
-    error = static_cast<float>(sum_squared);
+    else
+    {
+      // A patch leaving the image cannot lower the fixed-support cost.
+      quality.robust_cost_after += std::max(prior_cost, lost_patch_cost);
+    }
   }
+  if (prior_support > 0)
+  {
+    quality.robust_cost_before /= prior_support;
+    quality.robust_cost_after /= prior_support;
+  }
+  if (quality.robust_cost_before > 0.0)
+    quality.robust_cost_reduction_ratio = 1.0 - quality.robust_cost_after / quality.robust_cost_before;
+  return quality.robust_support >= std::max(1, vio_inlier_min_) &&
+         quality.robust_cost_reduction_ratio > min_cost_reduction_ratio_;
+}
+
+bool VIOManager::validateRobustPose(const cv::Mat &image, const StatesGroup &candidate, double *cost_after)
+{
+  if (!(patch_huber_delta_ > 0.0)) return true;
+  if (robust_prior_errors_.empty() || !finiteVisualState(candidate) || image.type() != CV_8UC1 ||
+      image.cols != width || image.rows != height || !image.isContinuous()) return false;
+
+  const M3D camera_rotation = Rci * candidate.rot_end.transpose();
+  const V3D camera_translation = Pci - camera_rotation * candidate.pos_end;
+  const SE3 world_to_camera(camera_rotation, camera_translation);
+  vector<float> patch(3 * patch_size_total);
+  vector<float> errors(total_points, std::numeric_limits<float>::infinity());
+  for (int i = 0; i < total_points; ++i)
+  {
+    if (!std::isfinite(robust_prior_errors_[i])) continue;
+    errors[i] = evaluateGuardedPatch(image, world_to_camera * visual_submap->voxel_points[i]->pos_,
+                                     candidate.inv_expo_time, i, patch);
+  }
+  VioQuality quality;
+  const bool valid = evaluateRobustCost(errors, quality);
+  if (cost_after) *cost_after = quality.robust_cost_after;
+  return valid;
+}
+
+void VIOManager::computeVisualInformation(const cv::Mat &img)
+{
+  auto &quality = vio_quality_;
+  if (!(img_point_cov > 0.0) || !std::isfinite(img_point_cov)) return;
+
+  constexpr int grid_side = 4;
+  std::array<bool, grid_side * grid_side> occupied{};
+  MD(7, 7) information = MD(7, 7)::Zero();
+  const bool estimate_exposure = !inverse_composition_en && exposure_estimate_en;
+  const double exposure = inverse_composition_en ? 1.0 : state->inv_expo_time;
+  const M3D world_to_camera = new_frame_->T_f_w_.rotation_matrix();
+  std::array<vector<float>, 5> samples;
+  for (auto &patch : samples) patch.resize(3 * patch_size_total);
+  int informative_patches = 0;
+
+  for (int i = 0; i < total_points; ++i)
+  {
+    const double error = visual_submap->errors[i];
+    if (!(error < outlier_threshold * patch_size_total)) continue;
+    const V3D camera_point = new_frame_->w2f(visual_submap->voxel_points[i]->pos_);
+    const V2D pixel = cam->world2cam(camera_point);
+    const int column = static_cast<int>(pixel.x() * grid_side / width);
+    const int row = static_cast<int>(pixel.y() * grid_side / height);
+    occupied[row * grid_side + column] = true;
+
+    const int level = inverse_composition_en ? 0 : visual_submap->search_levels[i];
+    const int scale = 1 << level;
+    if (!patchInImage(pixel, width, height, (patch_size_half + 1) * scale)) continue;
+    getImagePatch(img, pixel + V2D(scale, 0), samples[0].data(), level);
+    getImagePatch(img, pixel - V2D(scale, 0), samples[1].data(), level);
+    getImagePatch(img, pixel + V2D(0, scale), samples[2].data(), level);
+    getImagePatch(img, pixel - V2D(0, scale), samples[3].data(), level);
+    if (estimate_exposure) getImagePatch(img, pixel, samples[4].data(), level);
+
+    MD(2, 3) camera_jacobian;
+    computeProjectionJacobian(camera_point, camera_jacobian);
+    const V3D rotated_point = camera_point - Pci;
+    M3D point_cross;
+    point_cross << SKEW_SYM_MATRX(rotated_point);
+    MD(2, 6) pose_jacobian;
+    pose_jacobian.leftCols<3>() = camera_jacobian * point_cross * Rci;
+    pose_jacobian.rightCols<3>() = -camera_jacobian * world_to_camera;
+
+    const double rmse = std::sqrt(error / patch_size_total);
+    const double weight = rmse > patch_huber_delta_ ? patch_huber_delta_ / rmse : 1.0;
+    const double precision = weight / (img_point_cov * patch_size_total);
+    const double gradient_scale = exposure / (2.0 * scale);
+    const int offset = level * patch_size_total;
+    for (int j = offset; j < offset + patch_size_total; ++j)
+    {
+      const V2D gradient(samples[0][j] - samples[1][j], samples[2][j] - samples[3][j]);
+      MD(7, 1) jacobian;
+      jacobian.head<6>() = gradient_scale * pose_jacobian.transpose() * gradient;
+      jacobian[6] = estimate_exposure ? samples[4][j] : 0.0;
+      information.noalias() += precision * jacobian * jacobian.transpose();
+    }
+    ++informative_patches;
+  }
+
+  quality.occupied_cells = std::count(occupied.begin(), occupied.end(), true);
+  if (informative_patches == 0 || !information.allFinite()) return;
+
+  MD(6, 6) pose_information = information.topLeftCorner<6, 6>();
+  if (estimate_exposure && information(6, 6) > 0.0)
+  {
+    const auto exposure_cross = information.topRightCorner<6, 1>();
+    pose_information.noalias() -= exposure_cross * exposure_cross.transpose() / information(6, 6);
+  }
+  pose_information = (0.5 * (pose_information + pose_information.transpose())).eval();
+  const Eigen::SelfAdjointEigenSolver<M3D> rotation_eigen(pose_information.topLeftCorner<3, 3>());
+  if (rotation_eigen.info() != Eigen::Success) return;
+
+  M3D translation_information = pose_information.bottomRightCorner<3, 3>();
+  const auto &rotation_values = rotation_eigen.eigenvalues();
+  const double tolerance = rotation_values.maxCoeff() * 1e-12;
+  for (int i = 0; i < 3; ++i)
+  {
+    if (rotation_values[i] <= std::max(0.0, tolerance)) continue;
+    const V3D rotation_cross = pose_information.bottomLeftCorner<3, 3>() * rotation_eigen.eigenvectors().col(i);
+    translation_information.noalias() -= rotation_cross * rotation_cross.transpose() / rotation_values[i];
+  }
+  const Eigen::SelfAdjointEigenSolver<M3D> translation_eigen(translation_information);
+  if (translation_eigen.info() != Eigen::Success) return;
+
+  quality.pose_information = pose_information;
+  quality.translation_information = translation_eigen.eigenvectors() *
+      translation_eigen.eigenvalues().cwiseMax(0.0).asDiagonal() * translation_eigen.eigenvectors().transpose();
+  quality.information_valid = true;
 }
 
 void VIOManager::processFrame(cv::Mat &img, vector<pointWithVar> &pg, const unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &feat_map,
@@ -1920,15 +2173,17 @@ void VIOManager::processFrame(cv::Mat &img, vector<pointWithVar> &pg, const unor
 {
   const StatesGroup lio_state = *state;
   if (!prepareFrame(img, pg, feat_map, guard_visual_update)) return;
-  if (guard_visual_update && !vio_last_ok_) *state = lio_state;
-  commitFrame(img, pg, feat_map, lio_state, guard_visual_update ? vio_last_ok_ : !vio_quality_.degenerate);
+  if (guard_visual_update_ && !vio_last_ok_) *state = lio_state;
+  commitFrame(img, pg, feat_map, lio_state, guard_visual_update_ ? vio_last_ok_ : !vio_quality_.degenerate);
 }
 
 bool VIOManager::prepareFrame(cv::Mat &img, vector<pointWithVar> &pg,
                               const unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &plane_map, bool guard_visual_update,
                               bool require_photometric_improvement)
 {
-  guard_visual_update_ = guard_visual_update;
+  const bool robust = patch_huber_delta_ > 0.0;
+  guard_visual_update_ = guard_visual_update || robust;
+  robust_prior_errors_.clear();
   vio_quality_ = VioQuality{};
   vio_quality_.degenerate = true;
   vio_quality_.mean_err = vio_quality_.rmse = 1000.0;
@@ -1970,10 +2225,11 @@ bool VIOManager::prepareFrame(cv::Mat &img, vector<pointWithVar> &pg,
   retrieve_end_time_ = omp_get_wtime();
 
   vector<float> prior_errors;
-  if (require_photometric_improvement && total_points > 0)
+  if ((require_photometric_improvement || robust) && total_points > 0)
   {
     evaluateGuardedVisualResiduals(img);
-    prior_errors = visual_submap->errors;
+    if (robust) robust_prior_errors_ = visual_submap->errors;
+    else prior_errors = visual_submap->errors;
   }
   computeJacobianAndUpdateEKF(img);
   bool valid_candidate = true;
@@ -2013,7 +2269,12 @@ bool VIOManager::prepareFrame(cv::Mat &img, vector<pointWithVar> &pg,
   if (guard_visual_update_ && vio_iter_used_ == 0) vio_quality_.degenerate = true;
   vio_last_ok_ = !vio_quality_.degenerate && vio_quality_.iters <= vio_max_iters_;
 
-  if (vio_last_ok_ && !prior_errors.empty())
+  if (robust && valid_candidate && !robust_prior_errors_.empty())
+  {
+    vio_last_ok_ &= evaluateRobustCost(visual_submap->errors, vio_quality_);
+    computeVisualInformation(img);
+  }
+  else if (vio_last_ok_ && !prior_errors.empty())
   {
     double prior_cost = 0.0, final_cost = 0.0;
     int same_support = 0;

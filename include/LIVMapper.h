@@ -169,6 +169,8 @@ public:
   VIOManagerPtr vio_manager;
   std::unique_ptr<fast_livo::MultiCameraVio> multi_camera_;
   ros::WallTime multi_camera_wait_start_;
+  LioQuality visual_support_quality_;
+  bool scan_diagnostics_ = false;
 
   ros::Publisher plane_pub;
   ros::Publisher voxel_pub;

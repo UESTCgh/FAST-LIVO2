@@ -3,6 +3,8 @@
 #include "multi_camera/camera_observation_queue.h"
 #include "vio.h"
 
+#include <Eigen/Eigenvalues>
+
 #include <algorithm>
 #include <cmath>
 #include <unordered_set>
@@ -107,7 +109,23 @@ struct VisualCorrection
   V3D rotation = V3D::Zero();
   V3D translation = V3D::Zero();
   double weight = 0.0;
+  double applied_cost = -1.0;
 };
+bool weightTranslation(const VioQuality &quality, double information_per_patch, V3D &translation)
+{
+  if (!quality.information_valid) return false;
+  const Eigen::SelfAdjointEigenSolver<M3D> spectrum(quality.translation_information);
+  if (spectrum.info() != Eigen::Success || !(spectrum.eigenvalues().maxCoeff() > 0.0)) return false;
+
+  const V3D information = spectrum.eigenvalues().cwiseMax(0.0);
+  const double floor = std::max(information_per_patch * quality.inliers, 0.05 * information.maxCoeff());
+  // Attenuate each translational mode according to the photometric evidence
+  // remaining after marginalizing rotation and exposure.
+  const V3D confidence = information.array() / (information.array() + floor);
+  translation = spectrum.eigenvectors() * confidence.asDiagonal() *
+                spectrum.eigenvectors().transpose() * translation;
+  return translation.allFinite();
+}
 }  // namespace
 
 struct MultiCameraVio::Impl
@@ -116,7 +134,12 @@ struct MultiCameraVio::Impl
   std::vector<std::unique_ptr<Camera>> cameras;
   std::vector<CameraObservation> observations;
   std::vector<Camera *> color_views;
+  bool event_timing;
+  double scan_end = 0.0;
   bool visual_feedback;
+  bool robust_vision;
+  int min_occupied_cells;
+  double information_per_patch;
   double gain;
   double rotation_weight;
   double translation_weight;
@@ -135,9 +158,19 @@ MultiCameraVio::MultiCameraVio(ros::NodeHandle &nh, const M3D &rotation, const V
     throw std::invalid_argument("multi_camera/cameras must contain at least one camera");
   const int queue_size = parameter(config, "queue_size", 8);
   if (queue_size <= 0) throw std::invalid_argument("multi_camera/queue_size must be positive");
+  impl.event_timing = parameter(config, "event_timing", false);
   impl.queue = std::make_unique<CameraObservationQueue>(names.size(), parameter(config, "association_window_s", 0.008),
-                                                        parameter(config, "camera_wait_s", 0.04), queue_size);
+                                                        parameter(config, "camera_wait_s", 0.04), queue_size,
+                                                        impl.event_timing ? parameter(config, "duplicate_window_s", 0.02) : 0.0);
   impl.visual_feedback = parameter(config, "visual_feedback", true);
+  impl.robust_vision = parameter(config, "robust_vision", false);
+  impl.min_occupied_cells = parameter(config, "min_occupied_cells", 4);
+  impl.information_per_patch = parameter(config, "translation_information_per_patch", 0.01);
+  const double patch_huber_delta = parameter(config, "patch_huber_delta", 8.0);
+  const double min_cost_reduction = parameter(config, "min_cost_reduction_ratio", 0.001);
+  if (impl.robust_vision && (impl.min_occupied_cells < 1 || impl.min_occupied_cells > 16 ||
+      !(impl.information_per_patch > 0.0) || !std::isfinite(impl.information_per_patch) || !(patch_huber_delta > 0.0)))
+    throw std::invalid_argument("Invalid robust multi-camera visual thresholds");
   impl.gain = parameter(config, "feedback_gain", 0.35);
   impl.rotation_weight = parameter(config, "rotation_weight", 1.0);
   impl.translation_weight = parameter(config, "translation_weight", 1.0);
@@ -160,6 +193,9 @@ MultiCameraVio::MultiCameraVio(ros::NodeHandle &nh, const M3D &rotation, const V
                                          parameter(config, "img_point_cov", 1000.0));
     if (!unique_topics.insert(nh.resolveName(view->topic)).second)
       throw std::invalid_argument("Multi-camera input topics must be distinct");
+    view->vio.setDeterministicVisualReduction(impl.event_timing);
+    if (impl.robust_vision)
+      view->vio.setRobustVisualOptions(patch_huber_delta, min_cost_reduction);
     impl.cameras.push_back(std::move(view));
   }
 }
@@ -184,22 +220,59 @@ void MultiCameraVio::subscribe(ros::NodeHandle &nh)
 bool MultiCameraVio::takeObservations(double previous_scan_end, double scan_end, double imu_watermark)
 {
   impl_->color_views.clear();
+  impl_->scan_end = scan_end;
+  if (impl_->event_timing)
+    return impl_->queue->takeEvents(previous_scan_end, scan_end, imu_watermark, impl_->observations);
   return impl_->queue->takeForInterval(previous_scan_end, scan_end, imu_watermark, impl_->observations);
+}
+
+bool MultiCameraVio::eventTiming() const { return impl_->event_timing; }
+
+std::vector<double> MultiCameraVio::eventTimes() const
+{
+  std::vector<double> times;
+  for (const auto &observation : impl_->observations)
+    if (times.empty() || observation.stamp != times.back()) times.push_back(observation.stamp);
+  return times;
+}
+
+bool MultiCameraVio::updateAtEvent(double stamp, const LioQuality &lidar_quality,
+                                  std::vector<pointWithVar> &points,
+                                  const std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &planes,
+                                  StatesGroup &state)
+{
+  const auto &observations = impl_->observations;
+  const auto begin = std::lower_bound(observations.begin(), observations.end(), stamp,
+                                     [](const CameraObservation &obs, double time) { return obs.stamp < time; });
+  auto end = begin;
+  while (end != observations.end() && end->stamp == stamp) ++end;
+  return updateBatch(stamp, V3D::Zero(), lidar_quality, points, planes, state,
+                     begin - observations.begin(), end - observations.begin());
 }
 
 void MultiCameraVio::update(double scan_end, const V3D &angular_velocity, const LioQuality &lidar_quality,
                             std::vector<pointWithVar> &points, const std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &planes,
                             StatesGroup &state)
 {
+  updateBatch(scan_end, angular_velocity, lidar_quality, points, planes, state, 0, impl_->observations.size());
+  impl_->observations.clear();
+}
+
+bool MultiCameraVio::updateBatch(double reference_time, const V3D &angular_velocity, const LioQuality &lidar_quality,
+                                std::vector<pointWithVar> &points,
+                                const std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &planes,
+                                StatesGroup &state, std::size_t begin, std::size_t end)
+{
   auto &impl = *impl_;
   const StatesGroup lidar_pose = state;
   std::vector<VisualCorrection> corrections;
-  corrections.reserve(impl.observations.size());
+  corrections.reserve(end - begin);
 
-  for (auto &observation : impl.observations)
+  for (std::size_t index = begin; index < end; ++index)
   {
+    auto &observation = impl.observations[index];
     auto &view = *impl.cameras[observation.camera_id];
-    const double dt = observation.stamp - scan_end;
+    const double dt = observation.stamp - reference_time;
     view.rotation_offset = Exp(angular_velocity, dt);
     view.position_offset = state.vel_end * dt;
     view.prior = state;
@@ -217,10 +290,14 @@ void MultiCameraVio::update(double scan_end, const V3D &angular_velocity, const 
     const M3D rotation_delta = state.rot_end.transpose() * corrected_rotation;
     correction.rotation = Log(rotation_delta);
     correction.translation = view.candidate.pos_end - view.prior.pos_end;
-    if (view.vio.vio_last_ok_ && correction.rotation.allFinite() && correction.translation.allFinite() &&
-        correction.rotation.norm() <= impl.max_rotation && correction.translation.norm() <= impl.max_translation)
+    const auto &quality = view.vio.vio_quality_;
+    bool acceptable = view.vio.vio_last_ok_ && correction.rotation.allFinite() && correction.translation.allFinite() &&
+                      correction.rotation.norm() <= impl.max_rotation && correction.translation.norm() <= impl.max_translation;
+    if (acceptable && impl.robust_vision)
+      acceptable = quality.occupied_cells >= impl.min_occupied_cells &&
+                   weightTranslation(quality, impl.information_per_patch, correction.translation);
+    if (acceptable)
     {
-      const auto &quality = view.vio.vio_quality_;
       correction.weight = std::sqrt(quality.inliers) * quality.inlier_ratio / std::max(1.0, quality.mean_err);
       view.exposure = view.candidate.inv_expo_time;
       view.exposure_variance = std::clamp(view.candidate.cov(6, 6) + 1e-4, 1e-6, 0.01);
@@ -244,7 +321,7 @@ void MultiCameraVio::update(double scan_end, const V3D &angular_velocity, const 
     total_weight += correction.weight;
   }
 
-  const bool use_visual = impl.visual_feedback && impl.gain > 0.0 && agree && total_weight > 0.0;
+  bool use_visual = impl.visual_feedback && impl.gain > 0.0 && agree && total_weight > 0.0;
   if (use_visual)
   {
     V3D weak_direction(lidar_quality.min_evec[3], lidar_quality.min_evec[4], lidar_quality.min_evec[5]);
@@ -256,8 +333,28 @@ void MultiCameraVio::update(double scan_end, const V3D &angular_velocity, const 
     // This deliberately preserves the LiDAR covariance and inertial states. The
     // visual maps are LiDAR-seeded, so their errors are correlated with that prior.
     const V3D rotation_step = (impl.gain * impl.rotation_weight / total_weight) * rotation;
-    state.rot_end *= Exp(rotation_step, 1.0);
-    state.pos_end += (impl.gain * impl.translation_weight / total_weight) * translation;
+    StatesGroup corrected = state;
+    corrected.rot_end *= Exp(rotation_step, 1.0);
+    corrected.pos_end += (impl.gain * impl.translation_weight / total_weight) * translation;
+
+    if (impl.robust_vision)
+    {
+      for (auto &correction : corrections)
+      {
+        if (correction.weight == 0.0) continue;
+        auto &view = *correction.camera;
+        StatesGroup applied = corrected;
+        applied.rot_end *= view.rotation_offset;
+        applied.pos_end += view.position_offset;
+        applied.inv_expo_time = view.exposure;
+        if (!view.vio.validateRobustPose(correction.observation->image, applied, &correction.applied_cost))
+        {
+          use_visual = false;
+          break;
+        }
+      }
+    }
+    if (use_visual) state = corrected;
   }
 
   for (auto &correction : corrections)
@@ -268,19 +365,28 @@ void MultiCameraVio::update(double scan_end, const V3D &angular_velocity, const 
     view.candidate.rot_end *= view.rotation_offset;
     view.candidate.pos_end += view.position_offset;
     view.candidate.inv_expo_time = view.exposure;
-    // Both camera maps are anchored to the same final pose. The scan geometry
-    // before the feedback is the reference for any newly inserted landmarks.
-    StatesGroup geometry_pose = lidar_pose;
-    geometry_pose.rot_end *= view.rotation_offset;
-    geometry_pose.pos_end += view.position_offset;
+    // Event frames reobserve fixed world points from the preceding scan.
+    // The scan-end association keeps its original geometry pose for insertion.
+    StatesGroup geometry_pose = view.candidate;
+    if (!impl.event_timing)
+    {
+      geometry_pose = lidar_pose;
+      geometry_pose.rot_end *= view.rotation_offset;
+      geometry_pose.pos_end += view.position_offset;
+    }
     view.vio.commitFrame(correction.observation->image, points, planes, geometry_pose, correction.weight > 0.0, true);
-    impl.color_views.push_back(&view);
+    if (std::find(impl.color_views.begin(), impl.color_views.end(), &view) == impl.color_views.end())
+      impl.color_views.push_back(&view);
     const auto &q = view.vio.vio_quality_;
+    if (impl.robust_vision)
+      ROS_INFO("[VISUAL_ROBUST] camera=%s image=%.6f cells=%d support=%d cost_before=%.6f cost_after=%.6f applied_cost=%.6f information=%d",
+               view.name.c_str(), correction.observation->stamp, q.occupied_cells, q.robust_support,
+               q.robust_cost_before, q.robust_cost_after, correction.applied_cost, q.information_valid);
     ROS_INFO("[MULTI_CAMERA] scan=%.6f camera=%s image=%.6f tracked=%d inliers=%d rmse=%.4f candidate=%d selected=%d",
-             scan_end, view.name.c_str(), correction.observation->stamp, q.tracked, q.inliers, q.rmse,
+             impl.scan_end, view.name.c_str(), correction.observation->stamp, q.tracked, q.inliers, q.rmse,
              correction.weight > 0, selected);
   }
-  impl.observations.clear();
+  return use_visual;
 }
 
 void MultiCameraVio::colorize(const PointCloudXYZI &world_cloud, double min_range, PointCloudXYZRGB &output) const
@@ -296,6 +402,7 @@ void MultiCameraVio::colorize(const PointCloudXYZI &world_cloud, double min_rang
     const V3D world = point.getVector3fMap().cast<double>();
     for (auto *view : impl_->color_views)
     {
+      if (!view->vio.new_frame_ || view->vio.img_rgb.empty()) continue;
       const V3D ray = view->vio.new_frame_->w2f(world);
       if (!ray.allFinite() || ray.z() <= 0.0 || ray.squaredNorm() <= min_range * min_range) continue;
       const V2D pixel = view->camera->world2cam(ray);

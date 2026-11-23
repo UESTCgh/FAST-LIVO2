@@ -13,7 +13,31 @@ which is included as part of this source code package.
 #include "LIVMapper.h"
 #include "multi_camera/multi_camera_vio.h"
 
+#include <cinttypes>
+#include <cstring>
 #include <filesystem>
+
+namespace
+{
+std::uint64_t scanSignature(const PointCloudXYZI &scan)
+{
+  std::uint64_t hash = 14695981039346656037ULL;
+  for (const auto &point : scan)
+  {
+    for (const float field : {point.x, point.y, point.z, point.intensity, point.curvature})
+    {
+      std::uint32_t bits;
+      std::memcpy(&bits, &field, sizeof(bits));
+      for (unsigned shift = 0; shift < 32; shift += 8)
+      {
+        hash ^= (bits >> shift) & 0xff;
+        hash *= 1099511628211ULL;
+      }
+    }
+  }
+  return hash;
+}
+} // namespace
 
 LIVMapper::LIVMapper(ros::NodeHandle &nh)
     : extT(0, 0, 0),
@@ -63,6 +87,7 @@ LIVMapper::LIVMapper(ros::NodeHandle &nh)
       throw std::invalid_argument("Multi-camera map export requires world-frame PCD output without COLMAP");
     const fast_livo::MultiCameraVio::CameraLoader load_camera = vk::camera_loader::loadFromRosNs;
     multi_camera_ = std::make_unique<fast_livo::MultiCameraVio>(nh, extR, extT, load_camera);
+    nh.param("multi_camera/scan_diagnostics", scan_diagnostics_, false);
     slam_mode_ = ONLY_LIO;
   }
   path.header.stamp = ros::Time::now();
@@ -314,7 +339,17 @@ void LIVMapper::processImu()
 
   // BIEVR LIO already propagated to this camera timestamp and deskewed the scan.
   if (LidarMeasures.lio_vio_flg != VIO || !voxelmap_manager->config_setting_.use_bievr_)
-    p_imu->Process2(LidarMeasures, _state, feats_undistort);
+  {
+    std::vector<ImuProcess::TimedObservation> events;
+    if (multi_camera_ && multi_camera_->eventTiming() && !_pv_list.empty())
+    {
+      const auto update = [this](double stamp, StatesGroup &state) {
+        return multi_camera_->updateAtEvent(stamp, visual_support_quality_, _pv_list, voxelmap_manager->voxel_map_, state);
+      };
+      for (const double stamp : multi_camera_->eventTimes()) events.push_back({stamp, update});
+    }
+    p_imu->Process2(LidarMeasures, _state, feats_undistort, events);
+  }
 
   if (gravity_align_en) gravityAlignment();
 
@@ -539,13 +574,25 @@ void LIVMapper::handleLIO()
 
   if (multi_camera_ && lio_ok)
   {
-    voxelmap_manager->BuildVisualSupport(_state, _pv_list, true);
-    multi_camera_->update(LidarMeasures.last_lio_update_time, p_imu->endAngularVelocity(), q,
-                          _pv_list, voxelmap_manager->voxel_map_, _state);
+    if (!multi_camera_->eventTiming())
+    {
+      voxelmap_manager->BuildVisualSupport(_state, _pv_list, true);
+      multi_camera_->update(LidarMeasures.last_lio_update_time, p_imu->endAngularVelocity(), q,
+                            _pv_list, voxelmap_manager->voxel_map_, _state);
+    }
     voxelmap_manager->BuildVisualSupport(_state, _pv_list, false);
     voxelmap_manager->UpdateVoxelMap(_pv_list);
     voxelmap_manager->position_last_ = _state.pos_end;
     if (voxelmap_manager->config_setting_.map_sliding_en) voxelmap_manager->mapSliding();
+    if (multi_camera_->eventTiming())
+    {
+      voxelmap_manager->BuildVisualSupport(_state, _pv_list, true);
+      visual_support_quality_ = q;
+    }
+  }
+  else if (multi_camera_ && multi_camera_->eventTiming())
+  {
+    _pv_list.clear();
   }
 
   if (lio_quality_log_en_ && fout_lioq.is_open())
@@ -1068,13 +1115,14 @@ void LIVMapper::imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
 {
   if (!imu_en) return;
 
-  if (last_timestamp_lidar < 0.0) return;
+  const bool waiting_for_lidar = last_timestamp_lidar < 0.0;
+  if (waiting_for_lidar && (!multi_camera_ || !multi_camera_->eventTiming() || ros_driver_fix_en)) return;
   // ROS_INFO("get imu at time: %.6f", msg_in->header.stamp.toSec());
   sensor_msgs::Imu::Ptr msg(new sensor_msgs::Imu(*msg_in));
   msg->header.stamp = ros::Time().fromSec(msg->header.stamp.toSec() - imu_time_offset);
   double timestamp = msg->header.stamp.toSec();
 
-  if (fabs(last_timestamp_lidar - timestamp) > 0.5 && (!ros_driver_fix_en))
+  if (!waiting_for_lidar && fabs(last_timestamp_lidar - timestamp) > 0.5 && !ros_driver_fix_en)
   {
     ROS_WARN("IMU and LiDAR not synced! delta time: %lf .\n", last_timestamp_lidar - timestamp);
   }
@@ -1104,6 +1152,12 @@ void LIVMapper::imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
   last_timestamp_imu = timestamp;
 
   imu_buffer.push_back(msg);
+  if (waiting_for_lidar)
+  {
+    // Buffer IMU samples until the first LiDAR scan arrives, even when the
+    // transport delivers the first in-scan IMU packet before that scan.
+    while (imu_buffer.front()->header.stamp.toSec() < timestamp - 1.0) imu_buffer.pop_front();
+  }
   // cout<<"got imu: "<<timestamp<<" imu size "<<imu_buffer.size()<<endl;
   mtx_buffer.unlock();
   if (imu_prop_enable)
@@ -1240,11 +1294,13 @@ bool LIVMapper::sync_packages(LidarMeasureGroup &meas)
 
     m.imu.clear();
     m.lio_time = meas.lidar_frame_end_time;
+    const bool first_event_scan = multi_camera_ && multi_camera_->eventTiming() && meas.lio_vio_flg == WAIT;
     mtx_buffer.lock();
     while (!imu_buffer.empty())
     {
-      if (imu_buffer.front()->header.stamp.toSec() > meas.lidar_frame_end_time) break;
-      m.imu.push_back(imu_buffer.front());
+      const double stamp = imu_buffer.front()->header.stamp.toSec();
+      if (stamp > meas.lidar_frame_end_time) break;
+      if (!first_event_scan || stamp >= meas.lidar_frame_beg_time) m.imu.push_back(imu_buffer.front());
       imu_buffer.pop_front();
     }
     lid_raw_data_buffer.pop_front();
@@ -1252,6 +1308,9 @@ bool LIVMapper::sync_packages(LidarMeasureGroup &meas)
     mtx_buffer.unlock();
     sig_buffer.notify_all();
 
+    if (scan_diagnostics_)
+      ROS_INFO("[LIDAR_SCAN] begin=%.9f end=%.9f points=%zu signature=%016" PRIx64 " imu=%zu",
+               meas.lidar_frame_beg_time, m.lio_time, meas.lidar->size(), scanSignature(*meas.lidar), m.imu.size());
     meas.lio_vio_flg = LIO; // process lidar topic, so timestamp should be lidar scan end.
     meas.measures.push_back(m);
     // ROS_INFO("ONlY HAS LiDAR and IMU, NO IMAGE!");

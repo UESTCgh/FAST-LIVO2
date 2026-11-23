@@ -31,6 +31,15 @@ struct VioQuality {
   double rmse = 0.0;      // photometric RMSE per pixel over finite tracks
   int iters = 0;          // 实际迭代次数（我们从 updateState/updateStateInverse 里回传）
   bool degenerate = false;
+  // Right rotation perturbation and additive world-frame translation.
+  MD(6, 6) pose_information = MD(6, 6)::Zero();
+  M3D translation_information = M3D::Zero();
+  bool information_valid = false;
+  int occupied_cells = 0; // Inlier coverage in a 4 by 4 image grid.
+  double robust_cost_before = 0.0;
+  double robust_cost_after = 0.0;
+  double robust_cost_reduction_ratio = 0.0;
+  int robust_support = 0; // Tracks contributing to both costs.
 };
 
 
@@ -204,6 +213,11 @@ public:
                              double inlier_ratio_min,
                              double mean_err_max,
                              int max_iters);
+  // Delta is in image intensity units per pixel. A nonpositive value disables robust updates.
+  void setRobustVisualOptions(double patch_huber_delta, double min_cost_reduction_ratio = 0.0);
+  void setDeterministicVisualReduction(bool enabled) { deterministic_visual_reduction_ = enabled; }
+  // Recheck another pose against this frame's initial support using the image prepared by prepareFrame.
+  bool validateRobustPose(const cv::Mat &image, const StatesGroup &candidate, double *cost_after = nullptr);
   
   // void resetRvizDisplay();
   // deque<VisualPoint *> map_cur_frame;
@@ -217,7 +231,14 @@ public:
   // pcl::VoxelGrid<PointType> downSizeFilter;
 private:
   bool guard_visual_update_ = false;
+  bool deterministic_visual_reduction_ = false;
   void evaluateGuardedVisualResiduals(const cv::Mat &img);
+  float evaluateGuardedPatch(const cv::Mat &img, const V3D &camera_point, double exposure, int index, vector<float> &patch);
+  bool evaluateRobustCost(const vector<float> &errors, VioQuality &quality) const;
+  void computeVisualInformation(const cv::Mat &img);
+  double patch_huber_delta_ = 0.0;
+  double min_cost_reduction_ratio_ = 0.0;
+  vector<float> robust_prior_errors_;
   double frame_start_time_ = 0.0;
   double retrieve_end_time_ = 0.0;
   double solve_end_time_ = 0.0;

@@ -9,7 +9,7 @@
 	<arg name="seq_name" default="$(eval 'gamma_multicam_' + arg('camera_mode'))" />
 	<arg name="lio_quality_log" default="" />
 
-	<rosparam command="load" file="$(find fast_livo)/config/gamma.yaml" />
+	<rosparam command="load" file="$(find fast_livo)/config/gamma_multicam.yaml" />
 	<rosparam command="load" file="$(arg multicam_config)" />
 	<rosparam param="multi_camera/cameras" subst_value="true">$(eval {'left': ['left'], 'right': ['right'], 'both': ['left', 'right']}[arg('camera_mode')])</rosparam>
 	<param name="multi_camera/visual_feedback" type="bool" value="$(arg visual_feedback)" />
@@ -27,5 +27,5 @@
 	<node pkg="fast_livo" type="fastlivo_mapping" name="laserMappingMulticam" output="screen">
 		<param name="multi_camera_enabled" type="bool" value="true" />
 	</node>
-	<node if="$(arg rviz)" launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find fast_livo)/rviz_cfg/fast_livo2.rviz" />
+	<node if="$(arg rviz)" launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find fast_livo)/rviz_cfg/fast_livo2_muti.rviz" />
 </launch>

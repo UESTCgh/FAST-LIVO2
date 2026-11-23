@@ -1,0 +1,33 @@
+<launch>
+	<arg name="camera_mode" default="both" />
+	<arg name="multicam_config" default="$(find fast_livo)/config/gamma_multicam.yaml" />
+	<arg name="robust_feedback_gain" default="$(eval '0.18' if arg('camera_mode') == 'both' else '')" />
+	<arg name="robust_axial_weight" default="$(eval '0.10' if arg('camera_mode') == 'both' else '')" />
+	<arg name="event_timing" default="true" />
+	<arg name="robust_vision" default="true" />
+	<arg name="scan_diagnostics" default="true" />
+	<arg name="visual_feedback" default="true" />
+	<arg name="right_feedback_gain" default="0.12" />
+	<arg name="rviz" default="true" />
+	<arg name="save_map" default="false" />
+	<arg name="map_dir" default="" />
+	<arg name="seq_name" default="$(eval 'gamma_multicam_event_' + arg('camera_mode'))" />
+	<arg name="lio_quality_log" default="" />
+
+	<include file="$(find fast_livo)/launch/mapping_gamma_multicam.launch">
+		<arg name="camera_mode" value="$(arg camera_mode)" />
+		<arg name="multicam_config" value="$(arg multicam_config)" />
+		<arg name="visual_feedback" value="$(arg visual_feedback)" />
+		<arg name="right_feedback_gain" value="$(arg right_feedback_gain)" />
+		<arg name="rviz" value="$(arg rviz)" />
+		<arg name="save_map" value="$(arg save_map)" />
+		<arg name="map_dir" value="$(arg map_dir)" />
+		<arg name="seq_name" value="$(arg seq_name)" />
+		<arg name="lio_quality_log" value="$(arg lio_quality_log)" />
+	</include>
+	<param name="multi_camera/event_timing" type="bool" value="$(arg event_timing)" />
+	<param name="multi_camera/robust_vision" type="bool" value="$(arg robust_vision)" />
+	<param name="multi_camera/scan_diagnostics" type="bool" value="$(arg scan_diagnostics)" />
+	<param if="$(eval arg('event_timing') and arg('robust_vision') and arg('robust_feedback_gain') != '')" name="multi_camera/feedback_gain" type="double" value="$(arg robust_feedback_gain)" />
+	<param if="$(eval arg('event_timing') and arg('robust_vision') and arg('robust_axial_weight') != '')" name="multi_camera/axial_weight" type="double" value="$(arg robust_axial_weight)" />
+</launch>
