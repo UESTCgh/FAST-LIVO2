@@ -602,7 +602,11 @@ void ImuProcess::Process2(LidarMeasureGroup &lidar_meas, StatesGroup &stat, Poin
     imu_need_init = true;
 
     last_imu = meas.imu.back();
-    if (bievr_deskew_) last_prop_end_time = pcl_end_time;
+    if (bievr_deskew_)
+    {
+      last_prop_end_time = pcl_end_time;
+      lidar_meas.last_lio_update_time = pcl_end_time;
+    }
 
     if (init_iter_num > MAX_INI_COUNT)
     {

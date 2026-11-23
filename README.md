@@ -115,6 +115,16 @@ rosbag play ~/data/GEODE/Shield_tunnel4_gamma.bag --topics /livox/lidar /livox/i
 
 For the original point-to-plane residual, add `lio_bievr:=false` and use a distinct `seq_name`. FAST-LIVO2 writes TUM trajectories to `Log/result/<seq_name>.txt`.
 
+Enable the left camera with `vio:=true` to run BIEVR and visual updates on the same state. With `save_map:=true`, the node saves its visual landmarks and colorized point cloud on clean shutdown. `map_dir` selects the output directory.
+
+```bash
+roslaunch fast_livo mapping_gamma.launch rviz:=false vio:=true save_map:=true \
+  seq_name:=Shield_tunnel4_gamma_bievr_vio map_dir:="$HOME/shield4_visual_map"
+rosbag play ~/data/GEODE/Shield_tunnel4_gamma.bag --topics /livox/lidar /livox/imu /left_camera/image/compressed
+```
+
+`visual_landmarks.pcd` contains sparse visual landmarks with normals. `all_downsampled_points.pcd` contains the downsampled XYZRGB cloud, and `all_raw_points.pcd` contains the full colorized cloud. The pose file contains the final pose at each processed camera timestamp. When the visual update fails the quality check, the pose remains at the corresponding LiDAR–IMU estimate.
+
 For comparison with the standalone BIEVR-LIO backend, build the BIEVR-LIO ROS1 package with Livox CustomMsg support and load its workspace before FAST-LIVO2.
 
 ```bash

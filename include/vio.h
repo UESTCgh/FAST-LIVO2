@@ -27,8 +27,8 @@ struct VioQuality {
   int tracked = 0;        // total_points
   int inliers = 0;        // errors <= propa_errors
   double inlier_ratio = 0.0;
-  double mean_err = 0.0;  // mean patch error (per point)
-  double rmse = 0.0;      // sqrt(mean_err)
+  double mean_err = 0.0;  // inlier photometric RMSE per pixel
+  double rmse = 0.0;      // photometric RMSE per pixel over finite tracks
   int iters = 0;          // 实际迭代次数（我们从 updateState/updateStateInverse 里回传）
   bool degenerate = false;
 };
@@ -42,6 +42,7 @@ struct SubSparseMap
   vector<vector<float>> warp_patch;
   vector<int> search_levels;
   vector<VisualPoint *> voxel_points;
+  vector<Feature *> reference_features;
   vector<double> inv_expo_list;
   vector<pointWithVar> add_from_voxel_map;
 
@@ -52,6 +53,7 @@ struct SubSparseMap
     warp_patch.reserve(SIZE_LARGE);
     search_levels.reserve(SIZE_LARGE);
     voxel_points.reserve(SIZE_LARGE);
+    reference_features.reserve(SIZE_LARGE);
     inv_expo_list.reserve(SIZE_LARGE);
     add_from_voxel_map.reserve(SIZE_SMALL);
   };
@@ -63,6 +65,7 @@ struct SubSparseMap
     warp_patch.clear();
     search_levels.clear();
     voxel_points.clear();
+    reference_features.clear();
     inv_expo_list.clear();
     add_from_voxel_map.clear();
   }
@@ -160,7 +163,8 @@ public:
   ~VIOManager();
   void updateStateInverse(cv::Mat img, int level);
   void updateState(cv::Mat img, int level);
-  void processFrame(cv::Mat &img, vector<pointWithVar> &pg, const unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &feat_map, double img_time);
+  void processFrame(cv::Mat &img, vector<pointWithVar> &pg, const unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &feat_map,
+                    double img_time, bool guard_visual_update = false);
   void retrieveFromVisualSparseMap(cv::Mat img, vector<pointWithVar> &pg, const unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &plane_map);
   void generateVisualMapPoints(cv::Mat img, vector<pointWithVar> &pg);
   void setImuToLidarExtrinsic(const V3D &transl, const M3D &rot);
@@ -205,6 +209,9 @@ public:
   // PointCloudXYZI::Ptr pg_down;
   // pcl::VoxelGrid<PointType> downSizeFilter;
 private:
+  bool guard_visual_update_ = false;
+  void evaluateGuardedVisualResiduals(const cv::Mat &img);
+
   // VIO quality thresholds (set by LIVMapper)
   int    vio_tracked_min_        = 60;
   int    vio_inlier_min_         = 40;

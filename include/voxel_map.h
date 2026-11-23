@@ -256,6 +256,7 @@ public:
   void StateEstimation(StatesGroup &state_propagat);
   bool UpdateBievrState(const StatesGroup &state_propagat, int min_measurements);
   void UpdateBievrMap(const StatesGroup &state);
+  void BuildVisualSupport(const StatesGroup &state, std::vector<pointWithVar> &points, bool assign_normals) const;
   PointCloudXYZI EffectiveWorldPoints() const;
   void TransformLidar(const Eigen::Matrix3d rot, const Eigen::Vector3d t, const PointCloudXYZI::Ptr &input_cloud,
                       pcl::PointCloud<pcl::PointXYZI>::Ptr &trans_cloud);

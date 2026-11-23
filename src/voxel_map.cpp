@@ -741,6 +741,41 @@ void VoxelMapManager::UpdateVoxelMap(const std::vector<pointWithVar> &input_poin
   }
 }
 
+void VoxelMapManager::BuildVisualSupport(const StatesGroup &state, std::vector<pointWithVar> &points, bool assign_normals) const
+{
+  const M3D world_from_lidar = state.rot_end * extR_;
+  const auto pose_covariance = state.cov.topLeftCorner<6, 6>();
+  points.clear();
+  points.resize(feats_down_body_->size());
+#ifdef MP_EN
+#pragma omp parallel for num_threads(MP_PROC_NUM)
+#endif
+  for (std::size_t i = 0; i < points.size(); ++i)
+  {
+    auto &pv = points[i];
+    pv.point_b = feats_down_body_->points[i].getVector3fMap().cast<double>();
+    pv.point_i = extR_ * pv.point_b + extT_;
+    pv.point_w = state.rot_end * pv.point_i + state.pos_end;
+
+    V3D point_for_covariance = pv.point_b;
+    calcBodyCov(point_for_covariance, config_setting_.dept_err_, config_setting_.beam_err_, pv.body_var);
+    pv.point_crossmat << SKEW_SYM_MATRX(pv.point_i);
+    Eigen::Matrix<double, 3, 6> jacobian;
+    jacobian.leftCols<3>() = -state.rot_end * pv.point_crossmat;
+    jacobian.rightCols<3>().setIdentity();
+    pv.var_nostate = world_from_lidar * pv.body_var * world_from_lidar.transpose();
+    pv.var = pv.var_nostate + jacobian * pose_covariance * jacobian.transpose();
+
+    if (!assign_normals) continue;
+    const V3D index = pv.point_w / config_setting_.max_voxel_size_;
+    const auto key = index.unaryExpr([](double value) { return static_cast<int64_t>(value < 0.0 ? value - 1.0 : value); }).eval();
+    const auto voxel = voxel_map_.find(VOXEL_LOCATION(key.x(), key.y(), key.z()));
+    if (voxel == voxel_map_.end()) continue;
+    const auto &plane = *voxel->second->find_correspond(pv.point_w)->plane_ptr_;
+    if (plane.is_plane_) pv.normal = plane.normal_;
+  }
+}
+
 void VoxelMapManager::BuildResidualListOMP(std::vector<pointWithVar> &pv_list, std::vector<PointToPlane> &ptpl_list)
 {
   int max_layer = config_setting_.max_layer_;

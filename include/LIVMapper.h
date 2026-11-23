@@ -35,6 +35,8 @@ public:
   void stateEstimationAndMapping();
   void handleVIO();
   void handleLIO();
+  void publishEstimatedPose();
+  void updateWorldScan();
   void savePCD();
   void processImu();
   
@@ -86,7 +88,9 @@ public:
   double match_time = 0, solve_time = 0, solve_const_H_time = 0;
 
   bool lidar_map_inited = false, pcd_save_en = false, img_save_en = false, pub_effect_point_en = false, pose_output_en = false, ros_driver_fix_en = false, hilti_en = false;
+  bool bievr_lio_ok_ = false;
   int img_save_interval = 1, pcd_save_interval = -1, pcd_save_type = 0;
+  std::string pcd_save_dir;
   int pub_scan_num = 1;
 
   StatesGroup imu_propagate, latest_ekf_state;
