@@ -106,16 +106,16 @@ rosbag play YOUR_DOWNLOADED.bag
 
 ### 4.1 GEODE Gamma tunnels
 
-The Gamma launch runs pure LiDAR–IMU odometry with the BIEVR residual in FAST-LIVO2. Start it and play the Gamma tunnel bag in a second terminal.
+The Gamma launch enables the left camera and runs BIEVR and visual updates on the same state. Use `vio:=false` to run LiDAR–IMU odometry with the BIEVR residual and play the Gamma tunnel bag in a second terminal.
 
 ```bash
-roslaunch fast_livo mapping_gamma.launch rviz:=false seq_name:=Shield_tunnel4_gamma_bievr
+roslaunch fast_livo mapping_gamma.launch rviz:=false vio:=false seq_name:=Shield_tunnel4_gamma_bievr
 rosbag play ~/data/GEODE/Shield_tunnel4_gamma.bag --topics /livox/lidar /livox/imu
 ```
 
 For the original point-to-plane residual, add `lio_bievr:=false` and use a distinct `seq_name`. FAST-LIVO2 writes TUM trajectories to `Log/result/<seq_name>.txt`.
 
-Enable the left camera with `vio:=true` to run BIEVR and visual updates on the same state. With `save_map:=true`, the node saves its visual landmarks and colorized point cloud on clean shutdown. `map_dir` selects the output directory.
+With the left camera enabled and `save_map:=true`, the node saves its visual landmarks and colorized point cloud on clean shutdown. `map_dir` selects the output directory.
 
 ```bash
 roslaunch fast_livo mapping_gamma.launch rviz:=false vio:=true save_map:=true \

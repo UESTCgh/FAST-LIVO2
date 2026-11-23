@@ -1,7 +1,7 @@
 <launch>
 	<arg name="rviz" default="true" />
 	<arg name="lio_bievr" default="true" />
-	<arg name="vio" default="false" />
+	<arg name="vio" default="true" />
 	<arg name="save_map" default="false" />
 	<arg name="map_dir" default="" />
 	<arg name="seq_name" default="" />
@@ -12,7 +12,7 @@
 
 	<group unless="$(arg bievr)">
 		<rosparam command="load" file="$(find fast_livo)/config/gamma.yaml" />
-		<param if="$(arg vio)" name="common/img_en" type="int" value="1" />
+		<param name="common/img_en" type="int" value="$(eval 1 if arg('vio') else 0)" />
 		<param if="$(arg save_map)" name="pcd_save/pcd_save_en" type="bool" value="true" />
 		<param if="$(eval arg('map_dir') != '')" name="pcd_save/output_dir" type="str" value="$(arg map_dir)" />
 		<param name="lio/residual_type" type="str" value="$(eval 'bievr' if arg('lio_bievr') else 'point_to_plane')" />
@@ -29,7 +29,7 @@
 			<node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find fast_livo)/rviz_cfg/fast_livo2.rviz" />
 		</group>
 
-		<node if="$(eval arg('vio') or not arg('lio_bievr'))" pkg="image_transport" type="republish" name="republish" args="compressed in:=/left_camera/image raw out:=/left_camera/image" output="screen" respawn="true"/>
+		<node if="$(arg vio)" pkg="image_transport" type="republish" name="republish" args="compressed in:=/left_camera/image raw out:=/left_camera/image" output="screen" respawn="true"/>
 	</group>
 
 	<group if="$(arg bievr)">
