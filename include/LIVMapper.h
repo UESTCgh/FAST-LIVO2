@@ -21,13 +21,15 @@ which is included as part of this source code package.
 #include <nav_msgs/Path.h>
 #include <vikit/camera_loader.h>
 
+namespace fast_livo { class MultiCameraVio; }
+
 class LIVMapper
 {
 public:
   LIVMapper(ros::NodeHandle &nh);
   ~LIVMapper();
   void initializeSubscribersAndPublishers(ros::NodeHandle &nh, image_transport::ImageTransport &it);
-  void initializeComponents();
+  void initializeComponents(bool multi_camera_enabled);
   void initializeFiles();
   void run();
   void gravityAlignment();
@@ -37,6 +39,7 @@ public:
   void handleLIO();
   void publishEstimatedPose();
   void updateWorldScan();
+  void publishMultiCameraCloud();
   void savePCD();
   void processImu();
   
@@ -164,6 +167,8 @@ public:
   ImuProcessPtr p_imu;
   VoxelMapManagerPtr voxelmap_manager;
   VIOManagerPtr vio_manager;
+  std::unique_ptr<fast_livo::MultiCameraVio> multi_camera_;
+  ros::WallTime multi_camera_wait_start_;
 
   ros::Publisher plane_pub;
   ros::Publisher voxel_pub;

@@ -1,0 +1,59 @@
+multi_camera:
+  cameras: [left, right]
+  association_window_s: 0.008
+  camera_wait_s: 0.04
+
+  visual_feedback: true
+  img_point_cov: 1000.0
+  max_translation_correction: 0.03 # m
+  max_rotation_correction_deg: 0.4
+  rotation_weight: 0.20
+  translation_weight: 1.0
+  axial_weight: 0.0
+  feedback_gain: 0.35
+
+  left:
+    topic: /left_camera/image/compressed
+    transport: compressed
+    time_offset: 0.0
+    # LiDAR to left camera, inverse of the first T_LiDAR_CamL in GEODE Gamma calibration.
+    Rcl: [0.030481734, -0.999506201, -0.007630027,
+          0.010470227, 0.007952445, -0.999913563,
+          0.999480484, 0.030399211, 0.010707461]
+    Pcl: [-0.124309171, -0.044253386, 0.150907406]
+    cam_model: Pinhole
+    cam_width: 1224
+    cam_height: 1024
+    scale: 1.0
+    cam_fx: 1174.433772943354
+    cam_fy: 1174.477432586343
+    cam_cx: 602.0977604990142
+    cam_cy: 506.2372585153649
+    cam_d0: -0.058079349939181 # k1
+    cam_d1: 0.134502746395860  # k2
+    cam_d2: 0.00001310282988798364 # p1
+    cam_d3: 0.0006216594495554388  # p2
+    cam_d4: -0.067349697730475 # k3
+
+  right:
+    topic: /right_camera/image/compressed
+    transport: compressed
+    time_offset: 0.0
+    # LiDAR to right camera. Compose LiDAR to left with inverse(T_IMU_CamR) * T_IMU_CamL.
+    Rcl: [0.026503547, -0.999644679, -0.002844096,
+          0.005381787, 0.002987742, -0.999981055,
+          0.999634232, 0.026487734, 0.005459071]
+    Pcl: [-0.318222338, -0.044662213, 0.150042547]
+    cam_model: Pinhole
+    cam_width: 1224
+    cam_height: 1024
+    scale: 1.0
+    cam_fx: 1176.913615863912
+    cam_fy: 1176.842324939614
+    cam_cx: 623.0737196158577
+    cam_cy: 506.3413554799947
+    cam_d0: -0.058644887375808 # k1
+    cam_d1: 0.149069462821167  # k2
+    cam_d2: 0.00002890617115514960 # p1
+    cam_d3: 0.0004838792151696638  # p2
+    cam_d4: -0.108760788211026 # k3

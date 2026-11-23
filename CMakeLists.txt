@@ -135,7 +135,9 @@ add_library(lio src/voxel_map.cpp src/bievr/bievr_registration.cpp src/bievr/bie
 target_link_libraries(lio PRIVATE TBB::tbb)
 add_library(pre src/preprocess.cpp)
 add_library(imu_proc src/IMU_Processing.cpp)
-add_library(laser_mapping src/LIVMapper.cpp)
+add_library(laser_mapping src/LIVMapper.cpp
+  src/multi_camera/camera_observation_queue.cpp
+  src/multi_camera/multi_camera_vio.cpp)
 
 # Add the main executable
 add_executable(fastlivo_mapping src/main.cpp)
@@ -157,4 +159,19 @@ target_link_libraries(fastlivo_mapping
 # Link mimalloc if found
 if(mimalloc_FOUND)
   target_link_libraries(fastlivo_mapping mimalloc)
+endif()
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(camera_observation_queue_test
+    test/camera_observation_queue_test.cpp src/multi_camera/camera_observation_queue.cpp)
+  if(TARGET camera_observation_queue_test)
+    target_link_libraries(camera_observation_queue_test ${catkin_LIBRARIES} ${OpenCV_LIBRARIES})
+  endif()
+  catkin_add_gtest(multi_camera_grid_test test/multi_camera_grid_test.cpp)
+  if(TARGET multi_camera_grid_test)
+    target_link_libraries(multi_camera_grid_test vio lio ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} ${Sophus_LIBRARIES})
+    if(OpenMP_CXX_FOUND)
+      target_link_libraries(multi_camera_grid_test OpenMP::OpenMP_CXX)
+    endif()
+  endif()
 endif()

@@ -42,6 +42,7 @@ public:
   void set_inv_expo_cov(const double &inv_expo);
   void set_imu_init_frame_num(const int &num);
   void enableBievrDeskew() { bievr_deskew_ = true; }
+  const V3D &endAngularVelocity() const { return angvel_last; }
   void disable_imu();
   void disable_gravity_est();
   void disable_bias_est();

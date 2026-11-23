@@ -71,7 +71,7 @@ void VIOManager::setLidarToCameraExtrinsic(vector<double> &R, vector<double> &P)
   Pcl << VEC_FROM_ARRAY(P);
 }
 
-void VIOManager::initializeVIO()
+void VIOManager::initializeVIO(bool include_partial_grid)
 {
   visual_submap = new SubSparseMap;
 
@@ -97,7 +97,13 @@ void VIOManager::initializeVIO()
   tmp << SKEW_SYM_MATRX(Pic);
   Jdp_dR = -Rci * tmp;
 
-  if (grid_size > 10)
+  if (include_partial_grid)
+  {
+    if (grid_size <= 10) grid_size = std::max(1, height / std::max(1, grid_n_height));
+    grid_n_width = (width + grid_size - 1) / grid_size;
+    grid_n_height = (height + grid_size - 1) / grid_size;
+  }
+  else if (grid_size > 10)
   {
     grid_n_width = ceil(static_cast<double>(width / grid_size));
     grid_n_height = ceil(static_cast<double>(height / grid_size));
@@ -135,6 +141,11 @@ void VIOManager::initializeVIO()
 
         int u = grid_size / 2 + (grid_col - 1) * grid_size;
         int v = grid_size / 2 + (grid_row - 1) * grid_size;
+        if (include_partial_grid)
+        {
+          u = std::min(u, width - 1);
+          v = std::min(v, height - 1);
+        }
         // it[ u + v * width ] = 255;
         for (float d_temp = d_min; d_temp <= d_max; d_temp += step)
         {
@@ -986,10 +997,8 @@ void VIOManager::updateVisualMapPoints(cv::Mat img)
     }
 
     V2D pc(new_frame_->w2c(pt->pos_));
+    if (guard_visual_update_ && !patchInImage(pc, width, height, patch_size_half + 1)) continue;
     bool add_flag = false;
-    
-    float *patch_temp = new float[patch_size_total];
-    getImagePatch(img, pc, patch_temp, 0);
     // TODO: condition: distance and view_angle
     // Step 1: time
     Feature *last_feature = pt->obs_.back();
@@ -1020,6 +1029,8 @@ void VIOManager::updateVisualMapPoints(cv::Mat img)
       update_num += 1;
       update_flag[i] = 1;
       Vector3d f = cam->cam2world(pc);
+      float *patch_temp = new float[patch_size_total];
+      getImagePatch(img, pc, patch_temp, 0);
       Feature *ftr_new = new Feature(pt, patch_temp, pc, f, new_frame_->T_f_w_, visual_submap->search_levels[i]);
       ftr_new->img_ = img;
       ftr_new->id_ = new_frame_->id_;
@@ -1907,6 +1918,16 @@ void VIOManager::evaluateGuardedVisualResiduals(const cv::Mat &img)
 void VIOManager::processFrame(cv::Mat &img, vector<pointWithVar> &pg, const unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &feat_map,
                               double img_time, bool guard_visual_update)
 {
+  const StatesGroup lio_state = *state;
+  if (!prepareFrame(img, pg, feat_map, guard_visual_update)) return;
+  if (guard_visual_update && !vio_last_ok_) *state = lio_state;
+  commitFrame(img, pg, feat_map, lio_state, guard_visual_update ? vio_last_ok_ : !vio_quality_.degenerate);
+}
+
+bool VIOManager::prepareFrame(cv::Mat &img, vector<pointWithVar> &pg,
+                              const unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &plane_map, bool guard_visual_update,
+                              bool require_photometric_improvement)
+{
   guard_visual_update_ = guard_visual_update;
   vio_quality_ = VioQuality{};
   vio_quality_.degenerate = true;
@@ -1921,9 +1942,8 @@ void VIOManager::processFrame(cv::Mat &img, vector<pointWithVar> &pg, const unor
     new_frame_.reset();
     img_rgb.release();
     img_cp.release();
-    return;
+    return false;
   }
-  const StatesGroup lio_state = *state;
 
   if (width != img.cols || height != img.rows)
   {
@@ -1945,12 +1965,16 @@ void VIOManager::processFrame(cv::Mat &img, vector<pointWithVar> &pg, const unor
   
   resetGrid();
 
-  double t1 = omp_get_wtime();
+  frame_start_time_ = omp_get_wtime();
+  retrieveFromVisualSparseMap(img, pg, plane_map);
+  retrieve_end_time_ = omp_get_wtime();
 
-  retrieveFromVisualSparseMap(img, pg, feat_map);
-
-  double t2 = omp_get_wtime();
-
+  vector<float> prior_errors;
+  if (require_photometric_improvement && total_points > 0)
+  {
+    evaluateGuardedVisualResiduals(img);
+    prior_errors = visual_submap->errors;
+  }
   computeJacobianAndUpdateEKF(img);
   bool valid_candidate = true;
   if (guard_visual_update_)
@@ -1989,21 +2013,55 @@ void VIOManager::processFrame(cv::Mat &img, vector<pointWithVar> &pg, const unor
   if (guard_visual_update_ && vio_iter_used_ == 0) vio_quality_.degenerate = true;
   vio_last_ok_ = !vio_quality_.degenerate && vio_quality_.iters <= vio_max_iters_;
 
-  if (guard_visual_update_ && !vio_last_ok_)
+  if (vio_last_ok_ && !prior_errors.empty())
   {
-    *state = lio_state;
-    updateFrameState(lio_state);
+    double prior_cost = 0.0, final_cost = 0.0;
+    int same_support = 0;
+    const double max_cost = outlier_threshold * patch_size_total;
+    for (int i = 0; i < total_points; ++i)
+    {
+      if (!std::isfinite(prior_errors[i])) continue;
+      const double error = visual_submap->errors[i];
+      // Track loss must not reduce the score.
+      prior_cost += std::min<double>(prior_errors[i], max_cost);
+      final_cost += std::min(error, max_cost);
+      same_support += std::isfinite(error);
+    }
+    vio_last_ok_ = same_support >= vio_inlier_min_ && final_cost < prior_cost;
   }
+  solve_end_time_ = omp_get_wtime();
+  return true;
+}
 
-  double t3 = omp_get_wtime();
-
-  if (guard_visual_update_ && vio_last_ok_)
+void VIOManager::commitFrame(const cv::Mat &img, vector<pointWithVar> &pg,
+                             const unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &feat_map,
+                             const StatesGroup &geometry_pose, bool update_observations, bool revalidate_pose)
+{
+  if (guard_visual_update_) updateFrameState(*state);
+  if (update_observations && revalidate_pose)
+  {
+    evaluateGuardedVisualResiduals(img);
+    int inliers = 0;
+    double cost = 0.0;
+    for (const float error : visual_submap->errors)
+    {
+      if (error < outlier_threshold * patch_size_total)
+      {
+        ++inliers;
+        cost += error;
+      }
+    }
+    update_observations = inliers >= std::max(1, vio_inlier_min_) && inliers >= vio_inlier_ratio_min_ * total_points &&
+                          cost <= vio_mean_err_max_ * vio_mean_err_max_ * patch_size_total * inliers;
+  }
+  const M3D rotation_delta = state->rot_end * geometry_pose.rot_end.transpose();
+  if (guard_visual_update_ &&
+      ((state->pos_end - geometry_pose.pos_end).norm() > 1e-10 || !rotation_delta.isIdentity(1e-10)))
   {
     vector<pointWithVar> points_at_visual_pose = pg;
-    const M3D rotation_delta = state->rot_end * lio_state.rot_end.transpose();
     for (auto &point : points_at_visual_pose)
     {
-      point.point_w = rotation_delta * (point.point_w - lio_state.pos_end) + state->pos_end;
+      point.point_w = rotation_delta * (point.point_w - geometry_pose.pos_end) + state->pos_end;
       point.var = (rotation_delta * point.var * rotation_delta.transpose()).eval();
     }
     generateVisualMapPoints(img, points_at_visual_pose);
@@ -2013,10 +2071,11 @@ void VIOManager::processFrame(cv::Mat &img, vector<pointWithVar> &pg, const unor
     generateVisualMapPoints(img, pg);
   }
 
+  const double t1 = frame_start_time_, t2 = retrieve_end_time_, t3 = solve_end_time_;
   double t4 = omp_get_wtime();
   
   plotTrackedPoints();
-  if (guard_visual_update_ ? vio_last_ok_ : !vio_quality_.degenerate) {
+  if (update_observations) {
 
     if (guard_visual_update_ && normal_en)
     {

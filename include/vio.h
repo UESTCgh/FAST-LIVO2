@@ -165,11 +165,18 @@ public:
   void updateState(cv::Mat img, int level);
   void processFrame(cv::Mat &img, vector<pointWithVar> &pg, const unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &feat_map,
                     double img_time, bool guard_visual_update = false);
+  // Split candidate estimation from the map update so multiple views can share a final pose.
+  bool prepareFrame(cv::Mat &img, vector<pointWithVar> &pg,
+                    const unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &plane_map, bool guard_visual_update,
+                    bool require_photometric_improvement = false);
+  void commitFrame(const cv::Mat &img, vector<pointWithVar> &pg,
+                   const unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &plane_map,
+                   const StatesGroup &geometry_pose, bool update_observations, bool revalidate_pose = false);
   void retrieveFromVisualSparseMap(cv::Mat img, vector<pointWithVar> &pg, const unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &plane_map);
   void generateVisualMapPoints(cv::Mat img, vector<pointWithVar> &pg);
   void setImuToLidarExtrinsic(const V3D &transl, const M3D &rot);
   void setLidarToCameraExtrinsic(vector<double> &R, vector<double> &P);
-  void initializeVIO();
+  void initializeVIO(bool include_partial_grid = false);
   void getImagePatch(cv::Mat img, V2D pc, float *patch_tmp, int level);
   void computeProjectionJacobian(V3D p, MD(2, 3) & J);
   void computeJacobianAndUpdateEKF(cv::Mat img);
@@ -211,6 +218,9 @@ public:
 private:
   bool guard_visual_update_ = false;
   void evaluateGuardedVisualResiduals(const cv::Mat &img);
+  double frame_start_time_ = 0.0;
+  double retrieve_end_time_ = 0.0;
+  double solve_end_time_ = 0.0;
 
   // VIO quality thresholds (set by LIVMapper)
   int    vio_tracked_min_        = 60;

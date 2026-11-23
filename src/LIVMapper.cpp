@@ -11,6 +11,7 @@ which is included as part of this source code package.
 */
 
 #include "LIVMapper.h"
+#include "multi_camera/multi_camera_vio.h"
 
 #include <filesystem>
 
@@ -50,7 +51,20 @@ LIVMapper::LIVMapper(ros::NodeHandle &nh)
     vio_inlier_ratio_min_,
     vio_mean_err_max_,
     vio_max_iters_);
-  initializeComponents();
+  bool multi_camera_enabled = false;
+  ros::NodeHandle private_nh("~");
+  private_nh.param("multi_camera_enabled", multi_camera_enabled, false);
+  initializeComponents(multi_camera_enabled);
+  if (multi_camera_enabled)
+  {
+    if (!voxel_config.use_bievr_ || !img_en || !imu_en || !lidar_en)
+      throw std::invalid_argument("Multi-camera mode requires BIEVR, LiDAR, IMU and image input");
+    if (pcd_save_en && (pcd_save_type != 0 || colmap_output_en))
+      throw std::invalid_argument("Multi-camera map export requires world-frame PCD output without COLMAP");
+    const fast_livo::MultiCameraVio::CameraLoader load_camera = vk::camera_loader::loadFromRosNs;
+    multi_camera_ = std::make_unique<fast_livo::MultiCameraVio>(nh, extR, extT, load_camera);
+    slam_mode_ = ONLY_LIO;
+  }
   path.header.stamp = ros::Time::now();
   path.header.frame_id = "camera_init";
 }
@@ -146,7 +160,7 @@ void LIVMapper::readParameters(ros::NodeHandle &nh)
   p_pre->blind_sqr = p_pre->blind * p_pre->blind;
 }
 
-void LIVMapper::initializeComponents() 
+void LIVMapper::initializeComponents(bool multi_camera_enabled)
 {
   downSizeFilterSurf.setLeafSize(filter_size_surf_min, filter_size_surf_min, filter_size_surf_min);
   extT << VEC_FROM_ARRAY(extrinT);
@@ -155,7 +169,7 @@ void LIVMapper::initializeComponents()
   voxelmap_manager->extT_ << VEC_FROM_ARRAY(extrinT);
   voxelmap_manager->extR_ << MAT_FROM_ARRAY(extrinR);
 
-  if (img_en || !voxelmap_manager->config_setting_.use_bievr_)
+  if (!multi_camera_enabled && (img_en || !voxelmap_manager->config_setting_.use_bievr_))
   {
     if (!vk::camera_loader::loadFromRosNs("laserMapping", vio_manager->cam)) throw std::runtime_error("Camera model not correctly specified.");
 
@@ -241,7 +255,8 @@ void LIVMapper::initializeSubscribersAndPublishers(ros::NodeHandle &nh, image_tr
             nh.subscribe(lid_topic, 200000, &LIVMapper::livox_pcl_cbk, this): 
             nh.subscribe(lid_topic, 200000, &LIVMapper::standard_pcl_cbk, this);
   sub_imu = nh.subscribe(imu_topic, 200000, &LIVMapper::imu_cbk, this);
-  sub_img = nh.subscribe(img_topic, 200000, &LIVMapper::img_cbk, this);
+  if (multi_camera_) multi_camera_->subscribe(nh);
+  else sub_img = nh.subscribe(img_topic, 200000, &LIVMapper::img_cbk, this);
   
   pubLaserCloudFullRes = nh.advertise<sensor_msgs::PointCloud2>("/cloud_registered", 100);
   pubLaserCloudFullRes360 = nh.advertise<sensor_msgs::PointCloud2>("/cloud_registered_360", 100);
@@ -444,7 +459,7 @@ void LIVMapper::handleLIO()
 
   double t0 = omp_get_wtime();
 
-  if (!use_bievr || !dense_map_en || fused_bievr)
+  if (!use_bievr || !dense_map_en || fused_bievr || multi_camera_)
   {
     downSizeFilterSurf.setInputCloud(feats_undistort);
     downSizeFilterSurf.filter(*feats_down_body);
@@ -520,6 +535,18 @@ void LIVMapper::handleLIO()
       _state = state_backup;                    // 状态回滚
   }
   if (!use_bievr) _pv_list = voxelmap_manager->pv_list_;
+  const V3D lidar_position = _state.pos_end;
+
+  if (multi_camera_ && lio_ok)
+  {
+    voxelmap_manager->BuildVisualSupport(_state, _pv_list, true);
+    multi_camera_->update(LidarMeasures.last_lio_update_time, p_imu->endAngularVelocity(), q,
+                          _pv_list, voxelmap_manager->voxel_map_, _state);
+    voxelmap_manager->BuildVisualSupport(_state, _pv_list, false);
+    voxelmap_manager->UpdateVoxelMap(_pv_list);
+    voxelmap_manager->position_last_ = _state.pos_end;
+    if (voxelmap_manager->config_setting_.map_sliding_en) voxelmap_manager->mapSliding();
+  }
 
   if (lio_quality_log_en_ && fout_lioq.is_open())
   {
@@ -530,7 +557,7 @@ void LIVMapper::handleLIO()
     for (int k = 0; k < 6; k++) fout_lioq << "," << q.eigs[k];
     fout_lioq << std::fixed << std::setprecision(4);
     for (int k = 0; k < 6; k++) fout_lioq << "," << q.min_evec[k];
-    fout_lioq << "," << _state.pos_end[0] << "," << _state.pos_end[1] << "," << _state.pos_end[2] << "\n";
+    fout_lioq << "," << lidar_position[0] << "," << lidar_position[1] << "," << lidar_position[2] << "\n";
   }
 
   double t2 = omp_get_wtime();
@@ -591,11 +618,11 @@ void LIVMapper::handleLIO()
   if (!fused_bievr) updateWorldScan();
 
   // Publish full 360° undistorted point cloud
-  if (slam_mode_ == LIVO && pubLaserCloudFullRes360.getNumSubscribers() > 0 && cloud_360_en)
+  if ((slam_mode_ == LIVO || multi_camera_) && pubLaserCloudFullRes360.getNumSubscribers() > 0 && cloud_360_en)
   {
     if (fused_bievr) updateWorldScan();
     PointCloudXYZI::Ptr fullCloudWorld(new PointCloudXYZI(*pcl_w_wait_pub));
-    if (!LidarMeasures.pcl_proc_next->empty())
+    if (!multi_camera_ && !LidarMeasures.pcl_proc_next->empty())
     {
       int next_size = LidarMeasures.pcl_proc_next->points.size();
       PointCloudXYZI nextCloudWorld(next_size, 1);
@@ -607,7 +634,7 @@ void LIVMapper::handleLIO()
     }
     sensor_msgs::PointCloud2 fullCloudMsg;
     pcl::toROSMsg(*fullCloudWorld, fullCloudMsg);
-    fullCloudMsg.header.stamp = ros::Time::now();
+    fullCloudMsg.header.stamp = multi_camera_ ? ros::Time(LidarMeasures.last_lio_update_time) : ros::Time::now();
     fullCloudMsg.header.frame_id = "camera_init";
     pubLaserCloudFullRes360.publish(fullCloudMsg);
   }
@@ -616,7 +643,8 @@ void LIVMapper::handleLIO()
     const double t = LidarMeasures.measures.back().lio_time;
     publish_frame_body(pubLaserCloudFull_body, t);
   }
-  if (!fused_bievr) publish_frame_world(pubLaserCloudFullRes, vio_manager);
+  if (multi_camera_) publishMultiCameraCloud();
+  else if (!fused_bievr) publish_frame_world(pubLaserCloudFullRes, vio_manager);
   if (pub_effect_point_en && (!use_bievr || lio_ok)) publish_effect_world(pubLaserCloudEffect);
   if (!use_bievr && voxelmap_manager->config_setting_.is_pub_plane_map_) voxelmap_manager->pubVoxelMap();
   frame_num++;
@@ -687,12 +715,49 @@ void LIVMapper::updateWorldScan()
   *pcl_w_wait_pub = *laserCloudWorld;
 }
 
+void LIVMapper::publishMultiCameraCloud()
+{
+  const double stamp = LidarMeasures.last_lio_update_time;
+  if (pcd_save_en)
+  {
+    const Eigen::Quaterniond q(_state.rot_end);
+    fout_lidar_pos << std::fixed << std::setprecision(6) << stamp << " " << _state.pos_end.transpose()
+                   << " " << q.coeffs().transpose() << "\n";
+  }
+  if (!pcd_save_en && pubLaserCloudFullRes.getNumSubscribers() == 0) return;
+  PointCloudXYZRGB rgb;
+  multi_camera_->colorize(*pcl_w_wait_pub, blind_rgb_points, rgb);
+  if (rgb.empty()) return;
+  if (pcd_save_en)
+  {
+    *pcl_wait_save += rgb;
+    static int colored_scans = 0;
+    if (pcd_save_interval > 0 && ++colored_scans >= pcd_save_interval)
+    {
+      std::ostringstream filename;
+      filename << pcd_save_dir << "/" << std::fixed << std::setprecision(6) << stamp << ".pcd";
+      pcl::io::savePCDFileBinary(filename.str(), *pcl_wait_save);
+      pcl_wait_save->clear();
+      colored_scans = 0;
+    }
+  }
+  if (pubLaserCloudFullRes.getNumSubscribers() > 0)
+  {
+    sensor_msgs::PointCloud2 message;
+    pcl::toROSMsg(rgb, message);
+    message.header.stamp.fromSec(stamp);
+    message.header.frame_id = "camera_init";
+    pubLaserCloudFullRes.publish(message);
+  }
+}
+
 void LIVMapper::savePCD() 
 {
-  if (pcd_save_en && slam_mode_ == LIVO && voxelmap_manager->config_setting_.use_bievr_)
+  if (pcd_save_en && (multi_camera_ || (slam_mode_ == LIVO && voxelmap_manager->config_setting_.use_bievr_)))
   {
     pcl::PointCloud<pcl::PointNormal> landmarks;
-    for (const auto &entry : vio_manager->feat_map)
+    if (multi_camera_) multi_camera_->appendLandmarks(landmarks);
+    else for (const auto &entry : vio_manager->feat_map)
     {
       for (const auto *point : entry.second->voxel_points)
       {
@@ -1119,7 +1184,7 @@ bool LIVMapper::sync_packages(LidarMeasureGroup &meas)
   const bool bievr_camera_pending = slam_mode_ == LIVO && meas.lio_vio_flg == LIO &&
                                     voxelmap_manager->config_setting_.use_bievr_;
   if (lid_raw_data_buffer.empty() && lidar_en && !bievr_camera_pending) return false;
-  if (img_buffer.empty() && img_en) return false;
+  if (img_buffer.empty() && img_en && !multi_camera_) return false;
   if (imu_buffer.empty() && imu_en && !bievr_camera_pending) return false;
 
   switch (slam_mode_)
@@ -1131,7 +1196,15 @@ bool LIVMapper::sync_packages(LidarMeasureGroup &meas)
     {
       // If not push the lidar into measurement data buffer
       meas.lidar = lid_raw_data_buffer.front(); // push the first lidar topic
-      if (meas.lidar->points.size() <= 1) return false;
+      if (meas.lidar->points.size() <= 1)
+      {
+        if (multi_camera_)
+        {
+          lid_raw_data_buffer.pop_front();
+          lid_header_time_buffer.pop_front();
+        }
+        return false;
+      }
 
       meas.lidar_frame_beg_time = lid_header_time_buffer.front();                                                // generate lidar_frame_beg_time
       float scan_duration_ms = meas.lidar->back().curvature;
@@ -1143,6 +1216,7 @@ bool LIVMapper::sync_packages(LidarMeasureGroup &meas)
       meas.lidar_frame_end_time = meas.lidar_frame_beg_time + scan_duration_ms / 1000.0;
       meas.pcl_proc_cur = meas.lidar;
       lidar_pushed = true;                                                                                       // flag
+      if (multi_camera_) multi_camera_wait_start_ = ros::WallTime::now();
     }
 
     if (imu_en && last_timestamp_imu < meas.lidar_frame_end_time)
@@ -1151,6 +1225,15 @@ bool LIVMapper::sync_packages(LidarMeasureGroup &meas)
       // make sure complete propagate.
       // ROS_ERROR("out sync");
       return false;
+    }
+
+    if (multi_camera_)
+    {
+      // Keep a scan-sized LiDAR update even if a camera disconnects or the bag ends.
+      const bool timed_out = (ros::WallTime::now() - multi_camera_wait_start_).toSec() >= 0.25;
+      const double watermark = timed_out ? std::numeric_limits<double>::max() : last_timestamp_imu;
+      if (!multi_camera_->takeObservations(meas.last_lio_update_time, meas.lidar_frame_end_time, watermark)) return false;
+      meas.measures.clear();
     }
 
     struct MeasureGroup m; // standard method to keep imu message.
@@ -1599,7 +1682,7 @@ void LIVMapper::publish_odometry(const ros::Publisher &pubOdomAftMapped)
 {
   odomAftMapped.header.frame_id = "camera_init";
   odomAftMapped.child_frame_id = "aft_mapped";
-  odomAftMapped.header.stamp = ros::Time::now(); //.ros::Time()fromSec(last_timestamp_lidar);
+  odomAftMapped.header.stamp = multi_camera_ ? ros::Time(LidarMeasures.last_lio_update_time) : ros::Time::now();
   set_posestamp(odomAftMapped.pose.pose);
 
   static tf::TransformBroadcaster br;
@@ -1617,7 +1700,7 @@ void LIVMapper::publish_odometry(const ros::Publisher &pubOdomAftMapped)
 
 void LIVMapper::publish_mavros(const ros::Publisher &mavros_pose_publisher)
 {
-  msg_body_pose.header.stamp = ros::Time::now();
+  msg_body_pose.header.stamp = multi_camera_ ? odomAftMapped.header.stamp : ros::Time::now();
   msg_body_pose.header.frame_id = "camera_init";
   set_posestamp(msg_body_pose.pose);
   mavros_pose_publisher.publish(msg_body_pose);
@@ -1626,8 +1709,9 @@ void LIVMapper::publish_mavros(const ros::Publisher &mavros_pose_publisher)
 void LIVMapper::publish_path(const ros::Publisher pubPath)
 {
   set_posestamp(msg_body_pose.pose);
-  msg_body_pose.header.stamp = ros::Time::now();
+  msg_body_pose.header.stamp = multi_camera_ ? odomAftMapped.header.stamp : ros::Time::now();
   msg_body_pose.header.frame_id = "camera_init";
+  if (multi_camera_) path.header.stamp = msg_body_pose.header.stamp;
   path.poses.push_back(msg_body_pose);
   pubPath.publish(path);
 }
