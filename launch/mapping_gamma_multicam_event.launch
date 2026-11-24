@@ -1,6 +1,6 @@
 <launch>
 	<arg name="camera_mode" default="both" />
-	<arg name="multicam_config" default="$(find fast_livo)/config/gamma_multicam.yaml" />
+	<arg name="multicam_config" default="$(find fast_livo)/config/camera/gamma_multicam.yaml" />
 	<arg name="robust_feedback_gain" default="$(eval '0.18' if arg('camera_mode') == 'both' else '')" />
 	<arg name="robust_axial_weight" default="$(eval '0.10' if arg('camera_mode') == 'both' else '')" />
 	<arg name="event_timing" default="true" />

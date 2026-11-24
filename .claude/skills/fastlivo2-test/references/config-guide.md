@@ -4,12 +4,12 @@
 
 | Launch 文件 | 全局配置（rosparam load） | 节点配置（rosparam file） |
 |---|---|---|
-| `mapping_super2.launch` | `config/mid360.yaml` | `config/super2_d435i.yaml` |
-| `mapping_avia.launch` | `config/avia.yaml` | `config/camera_pinhole.yaml` |
-| `mapping_avia_marslvig.launch` | `config/MARS_LVIG.yaml` | `config/camera_MARS_LVIG.yaml` |
-| `mapping_ouster_ntu.launch` | `config/NTU_VIRAL.yaml` | `config/camera_NTU_VIRAL.yaml` |
-| `mapping_hesaixt32_hilti22.launch` | `config/HILTI22.yaml` | `config/camera_fisheye_HILTI22.yaml` |
-| `mapping_geode_beta.launch` | `config/geode_beta.yaml` | `config/camera_geode_beta.yaml` |
+| `mapping_super2.launch` | `config/mid360.yaml` | `config/camera/super2_d435i.yaml` |
+| `mapping_avia.launch` | `config/avia.yaml` | `config/camera/camera_pinhole.yaml` |
+| `mapping_avia_marslvig.launch` | `config/MARS_LVIG.yaml` | `config/camera/camera_MARS_LVIG.yaml` |
+| `mapping_ouster_ntu.launch` | `config/NTU_VIRAL.yaml` | `config/camera/camera_NTU_VIRAL.yaml` |
+| `mapping_hesaixt32_hilti22.launch` | `config/HILTI22.yaml` | `config/camera/camera_fisheye_HILTI22.yaml` |
+| `mapping_geode_beta.launch` | `config/geode_beta.yaml` | `config/camera/camera_geode_beta.yaml` |
 
 ## 话题配置
 

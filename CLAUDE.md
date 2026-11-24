@@ -18,7 +18,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 每套传感器配置需要两个文件：
 - `config/<name>.yaml` — 运行时参数（话题、外参、LIO/VIO 调参）
-- `config/camera_<name>.yaml` — 相机内参，由 vikit 加载
+- `config/camera/camera_<name>.yaml` — 相机内参，由 vikit 加载
 
 `launch/` 中的 launch 文件通过 `config_path` 和 `camera_config_path` ROS 参数指向对应 YAML。
 

@@ -4,7 +4,7 @@
 	<rosparam command="load" file="$(find fast_livo)/config/geode_beta.yaml" />
 
 	<node pkg="fast_livo" type="fastlivo_mapping" name="laserMapping" output="screen">
-		<rosparam file="$(find fast_livo)/config/camera_geode_beta.yaml" />
+		<rosparam file="$(find fast_livo)/config/camera/camera_geode_beta.yaml" />
 	</node>
 
 	<group if="$(arg rviz)">

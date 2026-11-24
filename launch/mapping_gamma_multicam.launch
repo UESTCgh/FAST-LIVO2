@@ -1,6 +1,6 @@
 <launch>
 	<arg name="camera_mode" default="both" />
-	<arg name="multicam_config" default="$(find fast_livo)/config/gamma_multicam.yaml" />
+	<arg name="multicam_config" default="$(find fast_livo)/config/camera/gamma_multicam.yaml" />
 	<arg name="visual_feedback" default="true" />
 	<arg name="right_feedback_gain" default="0.12" />
 	<arg name="rviz" default="true" />

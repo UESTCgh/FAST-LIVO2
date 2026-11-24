@@ -71,9 +71,9 @@ evo:
 ```
 
 配置文件与 launch 文件的对应关系：
-- `mapping_super2.launch` 加载 `config/mid360.yaml`（rosparam load）+ `config/super2_d435i.yaml`（节点 rosparam）
-- `mapping_avia.launch` 加载 `config/avia.yaml` + `config/camera_pinhole.yaml`
-- `mapping_geode_beta.launch` 加载 `config/geode_beta.yaml` + `config/camera_geode_beta.yaml`（含 image_transport republish 节点，将 `/left_camera/image/compressed` 解压为 `/left_camera/image`）
+- `mapping_super2.launch` 加载 `config/mid360.yaml`（rosparam load）+ `config/camera/super2_d435i.yaml`（节点 rosparam）
+- `mapping_avia.launch` 加载 `config/avia.yaml` + `config/camera/camera_pinhole.yaml`
+- `mapping_geode_beta.launch` 加载 `config/geode_beta.yaml` + `config/camera/camera_geode_beta.yaml`（含 image_transport republish 节点，将 `/left_camera/image/compressed` 解压为 `/left_camera/image`）
 
 **注意**：测试完成后恢复原始配置（`pose_output_en: false`）。
 

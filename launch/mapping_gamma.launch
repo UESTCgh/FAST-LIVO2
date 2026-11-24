@@ -22,7 +22,7 @@
 		<param if="$(eval arg('lio_quality_log') != '')" name="lio_quality/log_en" type="bool" value="$(arg lio_quality_log)" />
 
 		<node pkg="fast_livo" type="fastlivo_mapping" name="laserMapping" output="screen">
-			<rosparam if="$(eval arg('vio') or not arg('lio_bievr'))" file="$(find fast_livo)/config/camera_gamma.yaml" />
+			<rosparam if="$(eval arg('vio') or not arg('lio_bievr'))" file="$(find fast_livo)/config/camera/camera_gamma.yaml" />
 		</node>
 
 		<group if="$(arg rviz)">

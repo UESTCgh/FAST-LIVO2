@@ -23,14 +23,14 @@
 #                     (default: $FASTLIVO_WS/devel/lib/fast_livo/fastlivo_mapping)
 #
 # Example (modified build):
-#   tool/run_sequence.sh config/geode_beta.yaml config/camera_geode_beta.yaml \
+#   tool/run_sequence.sh config/geode_beta.yaml config/camera/camera_geode_beta.yaml \
 #       /home/gh/data/GEODE/Tunneling_tunnel5_beta.bag geode_tunnel5_beta \
 #       tool/eval_results
 #
 # Example (upstream baseline built in /home/gh/fastlivo2_orig_ws):
 #   FASTLIVO_WS=/home/gh/fastlivo2_orig_ws \
 #   FASTLIVO_PKG_DIR=/home/gh/fastlivo2_orig_ws/src/FAST-LIVO2 \
-#   tool/run_sequence.sh config/geode_beta.yaml config/camera_geode_beta.yaml \
+#   tool/run_sequence.sh config/geode_beta.yaml config/camera/camera_geode_beta.yaml \
 #       /home/gh/data/GEODE/Tunneling_tunnel5_beta.bag tunnel5_original \
 #       tool/eval_results
 #

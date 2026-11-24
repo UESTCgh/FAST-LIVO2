@@ -10,8 +10,9 @@
 	<arg name="lio_quality_log" default="" />
 
 	<rosparam command="load" file="$(find fast_livo)/config/avia.yaml" />
-	<rosparam command="load" file="$(find fast_livo)/config/retail_multicam.yaml" />
-	<rosparam command="load" ns="multi_camera/left" file="$(find fast_livo)/config/camera_pinhole.yaml" />
+	<rosparam command="load" file="$(find fast_livo)/config/retail.yaml" />
+	<rosparam command="load" file="$(find fast_livo)/config/camera/retail_multicam.yaml" />
+	<rosparam command="load" ns="multi_camera/left" file="$(find fast_livo)/config/camera/camera_pinhole.yaml" />
 	<param name="multi_camera/event_timing" type="bool" value="$(arg event_timing)" />
 	<param name="multi_camera/robust_vision" type="bool" value="$(arg robust_vision)" />
 	<param name="multi_camera/scan_diagnostics" type="bool" value="$(arg scan_diagnostics)" />

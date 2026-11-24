@@ -1,0 +1,16 @@
+# Retail_Street overrides for the base AVIA configuration.
+lio:
+  residual_type: bievr
+  bievr:
+    voxel_size: 1.0
+    pixel_size: 0.07
+
+preprocess:
+  blind: 2.0
+  feature_extract_enabled: false
+
+time_offset:
+  img_time_offset: 0.0
+
+evo:
+  pose_output_en: true

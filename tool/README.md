@@ -21,20 +21,20 @@ cd src/FAST-LIVO2
 python3 tool/convert_gt.py            # 写 eval_results/tunnel{4,5}_gt.txt
 
 # 2. 修改版（当前 workspace 的编译产物）
-tool/run_sequence.sh config/geode_beta.yaml config/camera_geode_beta.yaml \
+tool/run_sequence.sh config/geode_beta.yaml config/camera/camera_geode_beta.yaml \
     /home/gh/data/GEODE/Tunneling_tunnel4_beta.bag tunnel4_modified tool/eval_results
-tool/run_sequence.sh config/geode_beta.yaml config/camera_geode_beta.yaml \
+tool/run_sequence.sh config/geode_beta.yaml config/camera/camera_geode_beta.yaml \
     /home/gh/data/GEODE/Tunneling_tunnel5_beta.bag tunnel5_modified tool/eval_results
 
 # 3. 原版基准（main 分支 worktree，单独 workspace 编译，链到本 ws 拿 vikit）
 #    git worktree add /home/gh/fastlivo2_orig_ws/src/FAST-LIVO2 main
-#    cp config/geode_beta.yaml config/camera_geode_beta.yaml /home/gh/fastlivo2_orig_ws/src/FAST-LIVO2/config/
+#    cp config/geode_beta.yaml config/camera/camera_geode_beta.yaml /home/gh/fastlivo2_orig_ws/src/FAST-LIVO2/config/
 #    (source devel/setup.bash; cd /home/gh/fastlivo2_orig_ws && catkin_make -DCMAKE_BUILD_TYPE=Release)
 FASTLIVO_WS=/home/gh/fastlivo2_orig_ws FASTLIVO_PKG_DIR=/home/gh/fastlivo2_orig_ws/src/FAST-LIVO2 \
-tool/run_sequence.sh config/geode_beta.yaml config/camera_geode_beta.yaml \
+tool/run_sequence.sh config/geode_beta.yaml config/camera/camera_geode_beta.yaml \
     /home/gh/data/GEODE/Tunneling_tunnel4_beta.bag tunnel4_original tool/eval_results
 FASTLIVO_WS=/home/gh/fastlivo2_orig_ws FASTLIVO_PKG_DIR=/home/gh/fastlivo2_orig_ws/src/FAST-LIVO2 \
-tool/run_sequence.sh config/geode_beta.yaml config/camera_geode_beta.yaml \
+tool/run_sequence.sh config/geode_beta.yaml config/camera/camera_geode_beta.yaml \
     /home/gh/data/GEODE/Tunneling_tunnel5_beta.bag tunnel5_original tool/eval_results
 
 # 4. 评估 + 出图
