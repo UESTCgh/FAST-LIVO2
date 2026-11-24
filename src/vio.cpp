@@ -260,6 +260,22 @@ void VIOManager::resetGrid()
 
 void VIOManager::computeProjectionJacobian(V3D p, MD(2, 3) & J)
 {
+  if (patch_huber_delta_ > 0.0)
+  {
+    // Differentiate the same projection used to sample the patch, including distortion.
+    constexpr double relative_step = 1e-5;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+      const double step = relative_step * std::max(std::abs(p[axis]), std::abs(p.z()));
+      V3D before = p;
+      V3D after = p;
+      before[axis] -= step;
+      after[axis] += step;
+      J.col(axis) = (cam->world2cam(after) - cam->world2cam(before)) / (2.0 * step);
+    }
+    return;
+  }
+
   const double x = p[0];
   const double y = p[1];
   const double z_inv = 1. / p[2];
@@ -2098,7 +2114,9 @@ void VIOManager::computeVisualInformation(const cv::Mat &img)
     const double error = visual_submap->errors[i];
     if (!(error < outlier_threshold * patch_size_total)) continue;
     const V3D camera_point = new_frame_->w2f(visual_submap->voxel_points[i]->pos_);
+    if (!camera_point.allFinite() || camera_point.z() <= 0.0) continue;
     const V2D pixel = cam->world2cam(camera_point);
+    if (!patchInImage(pixel, width, height, 0)) continue;
     const int column = static_cast<int>(pixel.x() * grid_side / width);
     const int row = static_cast<int>(pixel.y() * grid_side / height);
     occupied[row * grid_side + column] = true;

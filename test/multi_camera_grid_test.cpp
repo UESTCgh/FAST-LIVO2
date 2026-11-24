@@ -26,6 +26,35 @@ TEST(MultiCameraGrid, IncludesPixelsInPartialCells)
   EXPECT_LT(static_cast<std::size_t>(last_row * manager.grid_n_width + last_col), manager.append_voxel_points.size());
 }
 
+TEST(MultiCameraProjection, RobustJacobianMatchesDistortedProjection)
+{
+  vk::PinholeCamera camera(1224, 1024, 1.0, 1174.4, 1174.5, 602.1, 506.2,
+                           -0.05808, 0.13450, 0.0000131, 0.0006217, -0.06735);
+  VIOManager manager;
+  manager.cam = &camera;
+  manager.fx = camera.fx();
+  manager.fy = camera.fy();
+  const V3D point(1.64, -1.28, 4.0);
+
+  MD(2, 3) legacy_jacobian;
+  manager.computeProjectionJacobian(point, legacy_jacobian);
+  EXPECT_DOUBLE_EQ(legacy_jacobian(0, 0), camera.fx() / point.z());
+  EXPECT_DOUBLE_EQ(legacy_jacobian(0, 1), 0.0);
+
+  manager.setRobustVisualOptions(8.0);
+  MD(2, 3) robust_jacobian;
+  manager.computeProjectionJacobian(point, robust_jacobian);
+  EXPECT_GT((robust_jacobian - legacy_jacobian).norm(), 1.0);
+  for (int axis = 0; axis < 3; ++axis)
+  {
+    const V3D displacement = 1e-4 * V3D::Unit(axis);
+    const V3D before = point - displacement;
+    const V3D after = point + displacement;
+    const V2D observed = (camera.world2cam(after) - camera.world2cam(before)) / 2.0;
+    EXPECT_LT((robust_jacobian * displacement - observed).norm(), 1e-8);
+  }
+}
+
 int main(int argc, char **argv)
 {
   testing::InitGoogleTest(&argc, argv);
