@@ -4,6 +4,8 @@
 #include "vio.h"
 
 #include <Eigen/Eigenvalues>
+#include <cv_bridge/cv_bridge.h>
+#include <sensor_msgs/image_encodings.h>
 
 #include <algorithm>
 #include <cmath>
@@ -100,6 +102,7 @@ public:
   double exposure = 1.0;
   double exposure_variance = 0.001;
   ros::Subscriber subscriber;
+  ros::Publisher track_image_publisher;
 };
 
 struct VisualCorrection
@@ -207,6 +210,7 @@ void MultiCameraVio::subscribe(ros::NodeHandle &nh)
   for (std::size_t id = 0; id < impl_->cameras.size(); ++id)
   {
     auto &view = *impl_->cameras[id];
+    view.track_image_publisher = nh.advertise<sensor_msgs::Image>("multi_camera/" + view.name + "/tracks", 1);
     const double offset = view.time_offset;
     if (view.transport == "compressed")
       view.subscriber = nh.subscribe<sensor_msgs::CompressedImage>(view.topic, 32,
@@ -375,6 +379,13 @@ bool MultiCameraVio::updateBatch(double reference_time, const V3D &angular_veloc
       geometry_pose.pos_end += view.position_offset;
     }
     view.vio.commitFrame(correction.observation->image, points, planes, geometry_pose, correction.weight > 0.0, true);
+    if (view.track_image_publisher.getNumSubscribers() > 0 && !view.vio.img_cp.empty())
+    {
+      std_msgs::Header header;
+      header.stamp.fromSec(correction.observation->stamp);
+      view.track_image_publisher.publish(
+          cv_bridge::CvImage(header, sensor_msgs::image_encodings::BGR8, view.vio.img_cp).toImageMsg());
+    }
     if (std::find(impl.color_views.begin(), impl.color_views.end(), &view) == impl.color_views.end())
       impl.color_views.push_back(&view);
     const auto &q = view.vio.vio_quality_;
