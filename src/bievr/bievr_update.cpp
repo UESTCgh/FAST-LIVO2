@@ -12,6 +12,31 @@ using StateMatrix = Eigen::Matrix<double, DIM_STATE, DIM_STATE>;
 using StateVector = Eigen::Matrix<double, DIM_STATE, 1>;
 
 constexpr double kMeasurementVariance = 0.001;  // m², BIEVR-LIO-ESIKF
+constexpr double kIntensityHuberMeters = 0.05;
+
+double huberCost(double residual, double delta)
+{
+  const double magnitude = std::abs(residual);
+  return magnitude <= delta ? 0.5 * magnitude * magnitude : delta * (magnitude - 0.5 * delta);
+}
+
+M3D rotationInformationInverse(const PoseMatrix &information)
+{
+  const Eigen::SelfAdjointEigenSolver<M3D> solver(information.topLeftCorner<3, 3>());
+  if (solver.info() != Eigen::Success) return M3D::Zero();
+  const double tolerance = std::max(1e-9, 1e-9 * solver.eigenvalues().maxCoeff());
+  const V3D inverse = solver.eigenvalues().unaryExpr([tolerance](double value) {
+    return value > tolerance ? 1.0 / value : 0.0;
+  });
+  return solver.eigenvectors() * inverse.asDiagonal() * solver.eigenvectors().transpose();
+}
+
+M3D translationInformation(const PoseMatrix &information, const M3D &rotation_inverse)
+{
+  const M3D translation = information.bottomRightCorner<3, 3>() -
+      information.bottomLeftCorner<3, 3>() * rotation_inverse * information.topRightCorner<3, 3>();
+  return 0.5 * (translation + translation.transpose());
+}
 
 M3D rightJacobian(const V3D &rotation)
 {
@@ -32,6 +57,36 @@ struct BievrLinearization
   double residual = 0.0;
   bool valid = false;
 };
+
+bool improvesIntensity(const fast_livo::BievrRegistration &registration,
+                       const std::vector<BievrLinearization> &rows, double scale,
+                       const StatesGroup &geometry, const StatesGroup &joint, int min_matches)
+{
+  const auto &points = registration.intensityPoints();
+  double before = 0.0, after = 0.0;
+  int shared = 0, support = 0;
+  for (std::size_t i = 0; i < points.size(); ++i)
+  {
+    if (!rows[i].valid) continue;
+    ++support;
+    V3D gradient;
+    double geometry_residual, joint_residual;
+    if (!registration.sampleIntensity(i, geometry.rot_end * points[i] + geometry.pos_end, gradient, geometry_residual))
+      continue;
+    const double geometry_cost = huberCost(scale * geometry_residual, kIntensityHuberMeters);
+    before += geometry_cost;
+    if (registration.sampleIntensity(i, joint.rot_end * points[i] + joint.pos_end, gradient, joint_residual))
+    {
+      ++shared;
+      after += huberCost(scale * joint_residual, kIntensityHuberMeters);
+    }
+    else
+    {
+      after += std::max(geometry_cost, huberCost(0.15, kIntensityHuberMeters));
+    }
+  }
+  return shared >= min_matches && shared >= 0.8 * support && after < before;
+}
 }  // namespace
 
 VoxelMapManager::VoxelMapManager(const VoxelMapConfig &config, const std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> &voxel_map)
@@ -42,9 +97,16 @@ VoxelMapManager::VoxelMapManager(const VoxelMapConfig &config, const std::unorde
   {
     if (!std::isfinite(config.bievr_huber_delta_) || config.bievr_huber_delta_ <= 0.0 || config.max_iterations_ <= 0)
       throw std::invalid_argument("BIEVR requires a positive finite Huber delta and a positive iteration limit");
+    if (config.bievr_intensity_en_ &&
+        (!(config.bievr_intensity_scale_ > 0.0) || !std::isfinite(config.bievr_intensity_scale_) ||
+         !(config.bievr_intensity_weight_ > 0.0 && config.bievr_intensity_weight_ <= 1.0) ||
+         !(config.bievr_intensity_weak_ratio_ > 0.0 && config.bievr_intensity_weak_ratio_ <= 1.0) ||
+         config.bievr_intensity_min_matches_ <= 0))
+      throw std::invalid_argument("Invalid BIEVR intensity scale, weight, weak-axis threshold or support");
     bievr_registration_ = std::make_unique<fast_livo::BievrRegistration>(
         config.bievr_voxel_size_, config.bievr_pixel_size_, config.bievr_max_voxels_,
-        config.bievr_fine_voxel_size_, config.bievr_informed_voxels_);
+        config.bievr_fine_voxel_size_, config.bievr_informed_voxels_, config.bievr_intensity_en_,
+        config.bievr_intensity_sampling_);
   }
 }
 
@@ -63,7 +125,10 @@ bool VoxelMapManager::UpdateBievrState(const StatesGroup &prediction, int min_me
 
   bievr_registration_->selectPoints(*feats_undistort_, prediction.rot_end, prediction.pos_end, extR_, extT_);
   const auto &imu_points = bievr_registration_->imuPoints();
+  const auto &intensity_points = bievr_registration_->intensityPoints();
   std::vector<BievrLinearization> rows(imu_points.size());
+  std::vector<BievrLinearization> intensity_rows(intensity_points.size());
+  lio_quality_.intensity_candidates = intensity_points.size();
   StatesGroup estimate = prediction;
   Eigen::LDLT<StateMatrix> posterior_factor;
   V3D last_rotation_step = V3D::Zero();
@@ -145,8 +210,101 @@ bool VoxelMapManager::UpdateBievrState(const StatesGroup &prediction, int min_me
     delta.head<3>() = (transport.topLeftCorner<3, 3>() * delta.head<3>()).eval();
     StateVector state_rhs = -prior_factor.solve(delta);
     state_rhs.head<6>() += rhs;
-    const StateVector step = posterior_factor.solve(state_rhs);
+    StateVector step = posterior_factor.solve(state_rhs);
     if (!step.allFinite()) return false;
+
+    if (config_setting_.bievr_intensity_en_ &&
+        intensity_points.size() >= static_cast<std::size_t>(config_setting_.bievr_intensity_min_matches_))
+    {
+      const M3D geometry_translation = translationInformation(info, rotationInformationInverse(info));
+      const Eigen::SelfAdjointEigenSolver<M3D> translation_spectrum(geometry_translation);
+      if (translation_spectrum.info() == Eigen::Success && translation_spectrum.eigenvalues().maxCoeff() > 0.0)
+      {
+        const double weak_information = std::max(0.0, translation_spectrum.eigenvalues()[0]);
+        q.translation_eigen_ratio = weak_information / translation_spectrum.eigenvalues()[2];
+        if (q.translation_eigen_ratio < config_setting_.bievr_intensity_weak_ratio_)
+        {
+          const V3D axis = translation_spectrum.eigenvectors().col(0);
+          const double scale = config_setting_.bievr_intensity_scale_;
+#ifdef MP_EN
+#pragma omp parallel for num_threads(MP_PROC_NUM)
+#endif
+          for (std::size_t i = 0; i < intensity_points.size(); ++i)
+          {
+            auto &row = intensity_rows[i];
+            const V3D &p = intensity_points[i];
+            V3D gradient;
+            row.valid = bievr_registration_->sampleIntensity(i, estimate.rot_end * p + estimate.pos_end,
+                                                             gradient, row.residual);
+            if (!row.valid) continue;
+            gradient *= scale;
+            row.residual *= scale;
+            row.jacobian.head<3>() = p.cross(world_to_imu * gradient);
+            row.jacobian.tail<3>() = gradient;
+            row.valid = row.jacobian.allFinite() && std::isfinite(row.residual);
+          }
+
+          PoseMatrix intensity_information = PoseMatrix::Zero();
+          PoseVector intensity_rhs = PoseVector::Zero();
+          int matches = 0;
+          double squared_error = 0.0;
+          for (const auto &row : intensity_rows)
+          {
+            if (!row.valid) continue;
+            const double weight = kIntensityHuberMeters / std::max(kIntensityHuberMeters, std::abs(row.residual));
+            const double precision = weight / kMeasurementVariance;
+            intensity_information.noalias() += precision * row.jacobian * row.jacobian.transpose();
+            intensity_rhs.noalias() -= precision * row.jacobian * row.residual;
+            squared_error += row.residual * row.residual;
+            ++matches;
+          }
+
+          q.intensity_matches = matches;
+          q.intensity_photo_rmse = matches ? std::sqrt(squared_error / matches) / scale : 0.0;
+          if (matches >= config_setting_.bievr_intensity_min_matches_ && intensity_information.allFinite() &&
+              intensity_rhs.allFinite())
+          {
+            // Marginalize rotation before reducing the intensity factor to the weak translation mode.
+            const M3D rotation_inverse = rotationInformationInverse(intensity_information);
+            const M3D intensity_translation = translationInformation(intensity_information, rotation_inverse);
+            const V3D translation_rhs = intensity_rhs.tail<3>() -
+                intensity_information.bottomLeftCorner<3, 3>() * rotation_inverse * intensity_rhs.head<3>();
+            const double axis_information = axis.dot(intensity_translation * axis);
+            if (axis_information > std::max(1e-6, 0.1 * weak_information))
+            {
+              const double weight = config_setting_.bievr_intensity_weight_ *
+                  std::min(1.0, 4.0 * std::max(1e-6, weak_information) / axis_information);
+              StateVector projection = StateVector::Zero();
+              projection.segment<3>(3) = axis;
+              StateMatrix joint_information = posterior_information;
+              joint_information.noalias() += (weight * axis_information) * projection * projection.transpose();
+              Eigen::LDLT<StateMatrix> joint_factor(joint_information);
+              if (joint_factor.info() == Eigen::Success && (joint_factor.vectorD().array() > 0.0).all())
+              {
+                const StateVector joint_step = joint_factor.solve(state_rhs + weight * axis.dot(translation_rhs) * projection);
+                if (joint_step.allFinite())
+                {
+                  StatesGroup geometry_state = estimate;
+                  geometry_state += step;
+                  StatesGroup joint_state = estimate;
+                  joint_state += joint_step;
+                  if (improvesIntensity(*bievr_registration_, intensity_rows, scale, geometry_state, joint_state,
+                                        config_setting_.bievr_intensity_min_matches_))
+                  {
+                    step = joint_step;
+                    posterior_factor = joint_factor;
+                    q.intensity_axis_information = axis_information;
+                    q.intensity_applied_weight = weight;
+                    ++q.intensity_steps;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
     estimate += step;
     last_rotation_step = step.head<3>();
 

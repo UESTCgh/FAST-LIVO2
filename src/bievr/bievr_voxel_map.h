@@ -30,6 +30,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // Adapted from BIEVR-LIO-ESIKF (23543322879c19a12f6151499a0074e4cd539d0f).
+// Intensity images and scoring are adapted from COIN-BIEVR (c560f3be7feebf5636fe4b2def021b77e26db52a).
 #pragma once
 
 #include <algorithm>
@@ -39,6 +40,8 @@
 #include <cstdint>
 #include <limits>
 #include <list>
+#include <memory>
+#include <numeric>
 #include <stdexcept>
 #include <tuple>
 #include <unordered_map>
@@ -93,6 +96,15 @@ private:
     }
 };
 
+struct BievrIntensityImage
+{
+    Eigen::MatrixXf image;
+    Eigen::MatrixXf smoothed;
+    Eigen::MatrixXf weights;
+    Eigen::Vector2d gradient_strength = Eigen::Vector2d::Zero();
+    std::vector<float> pending;
+};
+
 struct BievrVoxel
 {
     bool observed_ = false;
@@ -106,6 +118,7 @@ struct BievrVoxel
     std::size_t point_count_ = 0U;
     double mean_image_distance_ = 0.0;
     std::vector<Eigen::Vector4d> pending_points_;
+    std::unique_ptr<BievrIntensityImage> intensity_;
 };
 
 struct BievrMeasurement
@@ -125,6 +138,8 @@ public:
         double normal_tolerance_degrees_ = 3.0;
         bool use_range_weight_ = true;
         bool smooth_image_ = true;
+        bool intensity_enabled_ = false;
+        bool smooth_intensity_ = true;
     };
 
     struct SamplingParameters
@@ -212,6 +227,12 @@ public:
                 static_cast<std::int32_t>(std::floor(_point.z() * inverse_voxel_size_))};
     }
 
+    [[nodiscard]] bool canIndex(const Eigen::Vector3d &point) const noexcept
+    {
+        constexpr double maximum_index = std::numeric_limits<std::int32_t>::max() - 2.0;
+        return point.allFinite() && point.cwiseAbs().maxCoeff() * inverse_voxel_size_ <= maximum_index;
+    }
+
     [[nodiscard]] const BievrVoxel *findVoxel(const BievrVoxelKey &_key) const
     {
         const auto iterator = voxels_.find(_key);
@@ -255,9 +276,32 @@ public:
         return true;
     }
 
+    [[nodiscard]] bool sampleIntensity(const Eigen::Vector3d &point_world, float scan_intensity,
+                                       BievrMeasurement &measurement) const
+    {
+        if (!parameters_.intensity_enabled_ || !(scan_intensity >= 0.0F && scan_intensity <= 255.0F) || !canIndex(point_world)) return false;
+        const BievrVoxel *voxel = findVoxel(pointToKey(point_world));
+        if (!voxel) voxel = findNearestVoxel(point_world);
+        if (!voxel || !voxel->intensity_) return false;
+
+        const auto &intensity = *voxel->intensity_;
+        const Eigen::Vector3d point_cell = voxel->cell_from_world_ * point_world;
+        const double x = point_cell.x() * inverse_pixel_size_;
+        const double y = point_cell.y() * inverse_pixel_size_;
+        double value, gradient_x, gradient_y;
+        if (!sampleValueAndGradient(intensity.smoothed, intensity.weights, x, y,
+                                    value, gradient_x, gradient_y, true)) return false;
+
+        const Eigen::RowVector2d local_gradient(-gradient_x * inverse_pixel_size_, -gradient_y * inverse_pixel_size_);
+        measurement.position_jacobian_.noalias() = local_gradient * voxel->cell_from_world_.linear().topRows<2>();
+        measurement.residual_ = static_cast<double>(scan_intensity) - value;
+        return true;
+    }
+
     static void downsampleNearestToVoxelCenter(const pcl::PointCloud<pcl::PointXYZINormal> &_input,
                                                const double _voxel_size,
-                                               pcl::PointCloud<pcl::PointXYZINormal> &_output)
+                                               pcl::PointCloud<pcl::PointXYZINormal> &_output,
+                                               std::vector<std::size_t> *source_indices = nullptr)
     {
         if (!(_voxel_size > 0.0))
         {
@@ -266,6 +310,7 @@ public:
         if (_input.empty())
         {
             _output.clear();
+            if (source_indices) source_indices->clear();
             return;
         }
 
@@ -323,10 +368,12 @@ public:
                 _output.points[index] = _input.points[selected_indices[index]];
             }
         });
+        if (source_indices) *source_indices = std::move(selected_indices);
     }
 
     void update(const pcl::PointCloud<pcl::PointXYZINormal> &_points_world,
-                const std::vector<double> *_ranges = nullptr)
+                const std::vector<double> *_ranges = nullptr,
+                const std::vector<float> *intensities = nullptr)
     {
         if (_points_world.empty())
         {
@@ -336,10 +383,13 @@ public:
         {
             throw std::invalid_argument("BIEVR range count must equal point count");
         }
+        if (intensities && intensities->size() != _points_world.size())
+            throw std::invalid_argument("BIEVR intensity count must equal point count");
+        if (!parameters_.intensity_enabled_) intensities = nullptr;
 
         std::vector<HashedPoint> hashed_points(_points_world.size());
         tbb::parallel_for(tbb::blocked_range<std::size_t>(0U, _points_world.size()),
-                          [this, &_points_world, _ranges, &hashed_points](const tbb::blocked_range<std::size_t> &_range)
+                          [this, &_points_world, _ranges, intensities, &hashed_points](const tbb::blocked_range<std::size_t> &_range)
         {
             for (std::size_t index = _range.begin(); index != _range.end(); ++index)
             {
@@ -349,6 +399,11 @@ public:
                     point.z,
                     _ranges == nullptr ? 1.0 : (*_ranges)[index];
                 hashed_points[index].key_ = pointToKey(hashed_points[index].point_.head<3>());
+                if (intensities)
+                {
+                    const float intensity = (*intensities)[index];
+                    if (intensity >= 0.0F && intensity <= 255.0F) hashed_points[index].intensity = intensity;
+                }
             }
         });
 
@@ -365,14 +420,16 @@ public:
                                              _left.point_.x(),
                                              _left.point_.y(),
                                              _left.point_.z(),
-                                             _left.point_.w());
+                                             _left.point_.w(),
+                                             _left.intensity);
             const auto right_key = std::tuple(_right.key_.x_,
                                               _right.key_.y_,
                                               _right.key_.z_,
                                               _right.point_.x(),
                                               _right.point_.y(),
                                               _right.point_.z(),
-                                              _right.point_.w());
+                                              _right.point_.w(),
+                                              _right.intensity);
             return left_key < right_key;
         });
 
@@ -396,9 +453,10 @@ public:
 
         std::vector<typename VoxelMap::iterator> voxel_iterators(group_starts.size());
         tbb::parallel_for(tbb::blocked_range<std::size_t>(0U, group_starts.size()),
-                          [this, &hashed_points, &group_starts, &voxel_iterators](const tbb::blocked_range<std::size_t> &_range)
+                          [this, &hashed_points, &group_starts, &voxel_iterators, intensities](const tbb::blocked_range<std::size_t> &_range)
         {
             std::vector<Eigen::Vector4d> voxel_points;
+            std::vector<float> voxel_intensities;
             for (std::size_t group_index = _range.begin(); group_index != _range.end(); ++group_index)
             {
                 const std::size_t begin = group_starts[group_index];
@@ -408,6 +466,7 @@ public:
                 BievrVoxel &voxel = iterator->second.voxel_;
 
                 voxel_points.clear();
+                voxel_intensities.clear();
                 voxel_points.reserve(end - begin);
                 for (std::size_t index = begin; index < end; ++index)
                 {
@@ -419,19 +478,41 @@ public:
                     voxel_points.push_back(hashed_points[index].point_);
                 }
 
+                if (intensities && !voxel.intensity_ &&
+                    std::any_of(hashed_points.begin() + begin, hashed_points.begin() + end,
+                                [](const HashedPoint &point) { return point.intensity >= 0.0F; }))
+                {
+                    voxel.intensity_ = std::make_unique<BievrIntensityImage>();
+                    voxel.intensity_->pending.resize(voxel.pending_points_.size(), -1.0F);
+                }
+                if (voxel.intensity_)
+                {
+                    voxel_intensities.reserve(end - begin);
+                    for (std::size_t index = begin; index < end; ++index)
+                        voxel_intensities.push_back(hashed_points[index].intensity);
+                }
+
                 const bool was_observed = voxel.observed_;
                 const bool normal_changed = updateNormal(voxel);
                 if (!was_observed && voxel.observed_)
                 {
                     voxel_points.insert(voxel_points.end(), voxel.pending_points_.begin(), voxel.pending_points_.end());
+                    if (voxel.intensity_)
+                    {
+                        auto &pending = voxel.intensity_->pending;
+                        voxel_intensities.insert(voxel_intensities.end(), pending.begin(), pending.end());
+                        std::vector<float>().swap(pending);
+                    }
                     voxel.pending_points_.clear();
                     voxel.pending_points_.shrink_to_fit();
                 }
                 else if (!voxel.observed_)
                 {
                     voxel.pending_points_.insert(voxel.pending_points_.end(), voxel_points.begin(), voxel_points.end());
+                    if (voxel.intensity_)
+                        voxel.intensity_->pending.insert(voxel.intensity_->pending.end(), voxel_intensities.begin(), voxel_intensities.end());
                 }
-                updateBumpImage(voxel_points, voxel, normal_changed);
+                updateBumpImage(voxel_points, voxel, normal_changed, voxel_intensities);
             }
         });
 
@@ -454,11 +535,17 @@ public:
                                  const Eigen::Matrix3d &_rotation_imu_from_lidar,
                                  const Eigen::Vector3d &_position_imu_from_lidar,
                                  const SamplingParameters &_sampling,
-                                 pcl::PointCloud<pcl::PointXYZINormal> &_selected_points) const
+                                 pcl::PointCloud<pcl::PointXYZINormal> &_selected_points,
+                                 std::vector<std::size_t> *source_indices = nullptr) const
     {
         if (!_sampling.informed_sampling_enabled_ || _fine_points.size() <= _sampling.informed_voxel_count_)
         {
             _selected_points = _fine_points;
+            if (source_indices)
+            {
+                source_indices->resize(_fine_points.size());
+                std::iota(source_indices->begin(), source_indices->end(), std::size_t{0});
+            }
             return;
         }
 
@@ -540,6 +627,7 @@ public:
                 _selected_points.points[index] = _fine_points.points[selected_indices[index]];
             }
         });
+        if (source_indices) *source_indices = std::move(selected_indices);
     }
 
 private:
@@ -557,6 +645,7 @@ private:
     struct HashedPoint
     {
         BievrVoxelKey key_;
+        float intensity = -1.0F;
         Eigen::Vector4d point_ = Eigen::Vector4d::Zero();
     };
 
@@ -695,6 +784,16 @@ private:
         const Eigen::MatrixXf old_image = _voxel.bump_image_;
         const Eigen::MatrixXf old_weights = _voxel.bump_weights_;
         const Eigen::Isometry3d world_from_old_cell = _voxel.cell_from_world_.inverse();
+        Eigen::MatrixXf old_intensities, old_intensity_weights;
+        if (_voxel.intensity_)
+        {
+            auto &intensity = *_voxel.intensity_;
+            old_intensities.swap(intensity.image);
+            old_intensity_weights.swap(intensity.weights);
+            intensity.image.setZero(_bounds.height_, _bounds.width_);
+            intensity.smoothed.setZero(_bounds.height_, _bounds.width_);
+            intensity.weights.setZero(_bounds.height_, _bounds.width_);
+        }
 
         _voxel.bump_image_.setZero(_bounds.height_, _bounds.width_);
         _voxel.bump_image_smoothed_.setZero(_bounds.height_, _bounds.width_);
@@ -735,16 +834,27 @@ private:
                                            accumulated_weight;
                 _voxel.bump_weights_(y, x) = accumulated_weight;
                 _changed(y, x) = 1;
+                if (old_intensity_weights.size() > 0 && old_intensity_weights(row, column) > 0.0F)
+                {
+                    auto &intensity = *_voxel.intensity_;
+                    const float weight = old_intensity_weights(row, column);
+                    const float previous_weight = intensity.weights(y, x);
+                    intensity.weights(y, x) += weight;
+                    intensity.image(y, x) = (intensity.image(y, x) * previous_weight + old_intensities(row, column) * weight) /
+                                            intensity.weights(y, x);
+                }
             }
         }
     }
 
     void integrateVoxelPoints(const std::vector<Eigen::Vector4d> &_points,
                               BievrVoxel &_voxel,
-                              Eigen::MatrixXi &_changed)
+                              Eigen::MatrixXi &_changed,
+                              const std::vector<float> &intensities)
     {
-        for (const Eigen::Vector4d &point : _points)
+        for (std::size_t index = 0U; index < _points.size(); ++index)
         {
+            const Eigen::Vector4d &point = _points[index];
             const Eigen::Vector3d point_cell = _voxel.cell_from_world_ * point.head<3>();
             const int x = static_cast<int>(std::round(point_cell.x() * inverse_pixel_size_));
             const int y = static_cast<int>(std::round(point_cell.y() * inverse_pixel_size_));
@@ -761,6 +871,14 @@ private:
                                        accumulated_weight;
             _voxel.bump_weights_(y, x) = accumulated_weight;
             _changed(y, x) = 1;
+            if (_voxel.intensity_ && intensities[index] >= 0.0F)
+            {
+                auto &intensity = *_voxel.intensity_;
+                const float previous_intensity_weight = intensity.weights(y, x);
+                intensity.weights(y, x) += new_weight;
+                intensity.image(y, x) = (intensity.image(y, x) * previous_intensity_weight + new_weight * intensities[index]) /
+                                        intensity.weights(y, x);
+            }
         }
     }
 
@@ -858,7 +976,8 @@ private:
 
     bool updateBumpImage(const std::vector<Eigen::Vector4d> &_points,
                          BievrVoxel &_voxel,
-                         const bool _normal_changed)
+                         const bool _normal_changed,
+                         const std::vector<float> &intensities)
     {
         if (!_voxel.observed_ || _points.empty())
         {
@@ -874,7 +993,14 @@ private:
         {
             changed.setZero(_voxel.bump_image_.rows(), _voxel.bump_image_.cols());
         }
-        integrateVoxelPoints(_points, _voxel, changed);
+        if (_voxel.intensity_ && _voxel.intensity_->weights.size() == 0)
+        {
+            auto &intensity = *_voxel.intensity_;
+            intensity.image.setZero(changed.rows(), changed.cols());
+            intensity.smoothed.setZero(changed.rows(), changed.cols());
+            intensity.weights.setZero(changed.rows(), changed.cols());
+        }
+        integrateVoxelPoints(_points, _voxel, changed, intensities);
 
         Eigen::MatrixXi changed_for_smoothing;
         if (_normal_changed)
@@ -897,10 +1023,34 @@ private:
             _voxel.bump_image_smoothed_ = _voxel.bump_image_;
         }
         updateImageScore(_voxel);
+        if (_voxel.intensity_)
+        {
+            auto &intensity = *_voxel.intensity_;
+            if (parameters_.smooth_intensity_)
+                smoothImage(intensity.image, intensity.weights, changed_for_smoothing, intensity.smoothed);
+            else
+                intensity.smoothed = intensity.image;
+
+            double gradient_x = 0.0, gradient_y = 0.0;
+            for (int column = 0; column < intensity.weights.cols(); ++column)
+            {
+                for (int row = 0; row < intensity.weights.rows(); ++row)
+                {
+                    if (column > 0 && column + 1 < intensity.weights.cols() &&
+                        intensity.weights(row, column - 1) > 0.0F && intensity.weights(row, column + 1) > 0.0F)
+                        gradient_x += std::abs(intensity.smoothed(row, column + 1) - intensity.smoothed(row, column - 1));
+                    if (row > 0 && row + 1 < intensity.weights.rows() &&
+                        intensity.weights(row - 1, column) > 0.0F && intensity.weights(row + 1, column) > 0.0F)
+                        gradient_y += std::abs(intensity.smoothed(row + 1, column) - intensity.smoothed(row - 1, column));
+                }
+            }
+            intensity.gradient_strength << 0.5 * gradient_x, 0.5 * gradient_y;
+        }
         return true;
     }
 
-    [[nodiscard]] static bool interpolateValue(const BievrVoxel &_voxel,
+    [[nodiscard]] static bool interpolateValue(const Eigen::MatrixXf &image,
+                                               const Eigen::MatrixXf &image_weights,
                                                const double _x,
                                                const double _y,
                                                double &_value)
@@ -909,26 +1059,26 @@ private:
         const int y0 = static_cast<int>(std::floor(_y));
         const int x1 = x0 + 1;
         const int y1 = y0 + 1;
-        if (x0 < 0 || y0 < 0 || x1 >= _voxel.bump_image_smoothed_.cols() || y1 >= _voxel.bump_image_smoothed_.rows())
+        if (x0 < 0 || y0 < 0 || x1 >= image.cols() || y1 >= image.rows())
         {
             return false;
         }
 
         const double dx = _x - static_cast<double>(x0);
         const double dy = _y - static_cast<double>(y0);
-        const std::array<double, 4> weights{{(1.0 - dx) * (1.0 - dy) * (_voxel.bump_weights_(y0, x0) > 0.0F),
-                                             dx * (1.0 - dy) * (_voxel.bump_weights_(y0, x1) > 0.0F),
-                                             (1.0 - dx) * dy * (_voxel.bump_weights_(y1, x0) > 0.0F),
-                                             dx * dy * (_voxel.bump_weights_(y1, x1) > 0.0F)}};
+        const std::array<double, 4> weights{{(1.0 - dx) * (1.0 - dy) * (image_weights(y0, x0) > 0.0F),
+                                             dx * (1.0 - dy) * (image_weights(y0, x1) > 0.0F),
+                                             (1.0 - dx) * dy * (image_weights(y1, x0) > 0.0F),
+                                             dx * dy * (image_weights(y1, x1) > 0.0F)}};
         const double weight_sum = weights[0] + weights[1] + weights[2] + weights[3];
         if (!(weight_sum > 0.0))
         {
             return false;
         }
-        _value = (weights[0] * _voxel.bump_image_smoothed_(y0, x0) +
-                  weights[1] * _voxel.bump_image_smoothed_(y0, x1) +
-                  weights[2] * _voxel.bump_image_smoothed_(y1, x0) +
-                  weights[3] * _voxel.bump_image_smoothed_(y1, x1)) /
+        _value = (weights[0] * image(y0, x0) +
+                  weights[1] * image(y0, x1) +
+                  weights[2] * image(y1, x0) +
+                  weights[3] * image(y1, x1)) /
                  weight_sum;
         return true;
     }
@@ -940,21 +1090,29 @@ private:
                                                      double &_gradient_x,
                                                      double &_gradient_y)
     {
-        if (!interpolateValue(_voxel, _x, _y, _value))
+        return sampleValueAndGradient(_voxel.bump_image_smoothed_, _voxel.bump_weights_,
+                                      _x, _y, _value, _gradient_x, _gradient_y);
+    }
+
+    [[nodiscard]] static bool sampleValueAndGradient(const Eigen::MatrixXf &image,
+                                                     const Eigen::MatrixXf &image_weights,
+                                                     double _x, double _y, double &_value,
+                                                     double &_gradient_x, double &_gradient_y,
+                                                     bool require_gradient_support = false)
+    {
+        if (!interpolateValue(image, image_weights, _x, _y, _value))
         {
             return false;
         }
         double negative_value = 0.0;
         double positive_value = 0.0;
-        _gradient_x = interpolateValue(_voxel, _x - 1.0, _y, negative_value) &&
-                              interpolateValue(_voxel, _x + 1.0, _y, positive_value)
-                          ? 0.5 * (positive_value - negative_value)
-                          : 0.0;
-        _gradient_y = interpolateValue(_voxel, _x, _y - 1.0, negative_value) &&
-                              interpolateValue(_voxel, _x, _y + 1.0, positive_value)
-                          ? 0.5 * (positive_value - negative_value)
-                          : 0.0;
-        return true;
+        const bool horizontal = interpolateValue(image, image_weights, _x - 1.0, _y, negative_value) &&
+                                interpolateValue(image, image_weights, _x + 1.0, _y, positive_value);
+        _gradient_x = horizontal ? 0.5 * (positive_value - negative_value) : 0.0;
+        const bool vertical = interpolateValue(image, image_weights, _x, _y - 1.0, negative_value) &&
+                              interpolateValue(image, image_weights, _x, _y + 1.0, positive_value);
+        _gradient_y = vertical ? 0.5 * (positive_value - negative_value) : 0.0;
+        return !require_gradient_support || horizontal || vertical;
     }
 
     Parameters parameters_;

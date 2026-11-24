@@ -606,6 +606,10 @@ void LIVMapper::handleLIO()
     for (int k = 0; k < 6; k++) fout_lioq << "," << q.min_evec[k];
     fout_lioq << "," << lidar_position[0] << "," << lidar_position[1] << "," << lidar_position[2] << "\n";
   }
+  if (lio_quality_log_en_ && voxelmap_manager->config_setting_.bievr_intensity_en_)
+    ROS_INFO("[BIEVR_INTENSITY] scan=%.6f candidates=%d matches=%d applied=%d ratio=%.6g rmse=%.5f info=%.6g weight=%.6g",
+             LidarMeasures.last_lio_update_time, q.intensity_candidates, q.intensity_matches, q.intensity_steps,
+             q.translation_eigen_ratio, q.intensity_photo_rmse, q.intensity_axis_information, q.intensity_applied_weight);
 
   double t2 = omp_get_wtime();
 

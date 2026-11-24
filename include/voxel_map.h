@@ -51,6 +51,14 @@ struct LioQuality {
   int n_projected = 0;         // 本帧被 IMU 预测替代的方向数（最后一次迭代）
 
   int iters = 0;               // 实际迭代次数
+
+  int intensity_candidates = 0;
+  int intensity_matches = 0;
+  int intensity_steps = 0;
+  double translation_eigen_ratio = 0.0;
+  double intensity_photo_rmse = 0.0;
+  double intensity_axis_information = 0.0;
+  double intensity_applied_weight = 0.0;
 };
 
 typedef struct VoxelMapConfig
@@ -79,6 +87,12 @@ typedef struct VoxelMapConfig
   double bievr_huber_delta_ = 0.1;
   int bievr_max_voxels_ = 1500000;
   int bievr_informed_voxels_ = 300;
+  bool bievr_intensity_en_ = false;
+  bool bievr_intensity_sampling_ = true;
+  double bievr_intensity_scale_ = 0.002;
+  double bievr_intensity_weight_ = 1.0;
+  double bievr_intensity_weak_ratio_ = 0.15;
+  int bievr_intensity_min_matches_ = 80;
 } VoxelMapConfig;
 
 typedef struct PointToPlane

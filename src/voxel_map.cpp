@@ -65,6 +65,12 @@ void loadVoxelConfig(ros::NodeHandle &nh, VoxelMapConfig &voxel_config)
     nh.param<double>("lio/bievr/huber_delta", voxel_config.bievr_huber_delta_, 0.1);
     nh.param<int>("lio/bievr/max_voxels", voxel_config.bievr_max_voxels_, 1500000);
     nh.param<int>("lio/bievr/informed_voxels", voxel_config.bievr_informed_voxels_, 300);
+    nh.param<bool>("lio/bievr/intensity/enabled", voxel_config.bievr_intensity_en_, false);
+    nh.param<bool>("lio/bievr/intensity/informed_sampling", voxel_config.bievr_intensity_sampling_, true);
+    nh.param<double>("lio/bievr/intensity/scale", voxel_config.bievr_intensity_scale_, 0.002);
+    nh.param<double>("lio/bievr/intensity/weight", voxel_config.bievr_intensity_weight_, 1.0);
+    nh.param<double>("lio/bievr/intensity/weak_eigen_ratio", voxel_config.bievr_intensity_weak_ratio_, 0.15);
+    nh.param<int>("lio/bievr/intensity/min_matches", voxel_config.bievr_intensity_min_matches_, 80);
   }
 }
 

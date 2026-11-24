@@ -1,0 +1,21 @@
+<launch>
+	<arg name="rviz" default="true" />
+	<arg name="seq_name" default="gamma_coin_event" />
+	<arg name="visual_feedback" default="true" />
+	<arg name="intensity" default="true" />
+	<arg name="intensity_sampling" default="true" />
+	<arg name="intensity_weight" default="1.0" />
+	<arg name="lio_quality_log" default="false" />
+
+	<include file="$(find fast_livo)/launch/mapping_gamma_multicam_event.launch">
+		<arg name="camera_mode" value="both" />
+		<arg name="rviz" value="$(arg rviz)" />
+		<arg name="seq_name" value="$(arg seq_name)" />
+		<arg name="visual_feedback" value="$(arg visual_feedback)" />
+		<arg name="lio_quality_log" value="$(arg lio_quality_log)" />
+	</include>
+
+	<param name="lio/bievr/intensity/enabled" type="bool" value="$(arg intensity)" />
+	<param name="lio/bievr/intensity/informed_sampling" type="bool" value="$(arg intensity_sampling)" />
+	<param name="lio/bievr/intensity/weight" type="double" value="$(arg intensity_weight)" />
+</launch>
