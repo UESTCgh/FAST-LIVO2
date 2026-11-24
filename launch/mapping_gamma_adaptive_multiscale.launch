@@ -1,0 +1,28 @@
+<launch>
+	<arg name="mode" default="degeneracy" doc="base, fine, coarse, density or degeneracy" />
+	<arg name="base_pixel_size" default="0.05" />
+	<arg name="coarse_pixel_size" default="0.10" />
+	<arg name="fine_pixel_size" default="0.025" />
+	<arg name="adaptive_config" default="$(find fast_livo)/config/bievr/adaptive_multiscale.yaml" />
+	<arg name="rviz" default="true" />
+	<arg name="seq_name" default="$(eval 'gamma_multiscale_' + arg('mode'))" />
+	<arg name="lio_quality_log" default="false" />
+	<arg name="multiscale_log" default="true" />
+
+	<include file="$(find fast_livo)/launch/mapping_gamma.launch">
+		<arg name="lio_bievr" value="true" />
+		<arg name="vio" value="false" />
+		<arg name="rviz" value="$(arg rviz)" />
+		<arg name="seq_name" value="$(arg seq_name)" />
+		<arg name="lio_quality_log" value="$(arg lio_quality_log)" />
+	</include>
+	<param name="lio/bievr/pixel_size" type="double" value="$(eval {'base': arg('base_pixel_size'), 'fine': arg('fine_pixel_size'), 'coarse': arg('coarse_pixel_size'), 'density': arg('base_pixel_size'), 'degeneracy': arg('base_pixel_size')}[arg('mode')])" />
+	<param name="lio/bievr/intensity/enabled" type="bool" value="false" />
+	<rosparam command="load" ns="lio/bievr/adaptive_multiscale" file="$(arg adaptive_config)" />
+	<group ns="lio/bievr/adaptive_multiscale">
+		<param name="coarse_pixel_size_m" type="double" value="$(arg coarse_pixel_size)" />
+		<param name="enabled" type="bool" value="$(eval arg('mode') in ['density', 'degeneracy'])" />
+		<param name="density_only" type="bool" value="$(eval arg('mode') == 'density')" />
+		<param name="log_diagnostics" type="bool" value="$(arg multiscale_log)" />
+	</group>
+</launch>

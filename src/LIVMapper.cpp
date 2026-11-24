@@ -56,6 +56,7 @@ LIVMapper::LIVMapper(ros::NodeHandle &nh)
   loadVoxelConfig(nh, voxel_config);
   if (voxel_config.use_bievr_ && (!imu_en || !lidar_en))
     throw std::invalid_argument("lio/residual_type=bievr requires LiDAR and IMU");
+  scan_diagnostics_ = voxel_config.use_bievr_ && voxel_config.bievr_adaptive_.log_diagnostics;
 
   visual_sub_map.reset(new PointCloudXYZI());
   feats_undistort.reset(new PointCloudXYZI());
@@ -87,7 +88,7 @@ LIVMapper::LIVMapper(ros::NodeHandle &nh)
       throw std::invalid_argument("Multi-camera map export requires world-frame PCD output without COLMAP");
     const fast_livo::MultiCameraVio::CameraLoader load_camera = vk::camera_loader::loadFromRosNs;
     multi_camera_ = std::make_unique<fast_livo::MultiCameraVio>(nh, extR, extT, load_camera);
-    nh.param("multi_camera/scan_diagnostics", scan_diagnostics_, false);
+    scan_diagnostics_ |= nh.param("multi_camera/scan_diagnostics", false);
     slam_mode_ = ONLY_LIO;
   }
   path.header.stamp = ros::Time::now();
@@ -271,6 +272,16 @@ void LIVMapper::initializeFiles()
                  "eig0,eig1,eig2,eig3,eig4,eig5,"
                  "evec0_r0,evec0_r1,evec0_r2,evec0_p0,evec0_p1,evec0_p2,"
                  "px,py,pz\n";
+  }
+  if (voxelmap_manager->config_setting_.bievr_adaptive_.log_diagnostics)
+  {
+    fout_bievr_multiscale.open(DEBUG_FILE_DIR("bievr_multiscale_" + seq_name + ".csv"));
+    if (!fout_bievr_multiscale.is_open()) ROS_WARN("Could not open BIEVR multiscale diagnostics CSV");
+    fout_bievr_multiscale << "t,candidates,base_matches,selected_matches,final_matches,weak_rank,base_min_eig,"
+                             "base_eig_ratio,base_weak_info,selected_weak_info,evaluated_voxels,coarse_voxels,"
+                             "switched_voxels,coarse_cache_bytes,proposed_coarse_voxels,proposed_coarse_cache_bytes,"
+                             "sparse_candidates,sparse_base_matches,sparse_selected_matches,fallback,lio_ok,"
+                             "rotation_reference_m,base_eig1,base_eig2,base_eig3,base_eig4,base_eig5\n";
   }
 }
 
@@ -523,7 +534,7 @@ void LIVMapper::handleLIO()
   if (use_bievr)
   {
     if (!bootstrap_bievr)
-      lio_ok = voxelmap_manager->UpdateBievrState(state_propagat, th_eff_min_);
+      lio_ok = voxelmap_manager->UpdateBievrState(state_propagat, th_eff_min_, th_mean_abs_max_, th_rmse_max_);
   }
   else
   {
@@ -610,6 +621,21 @@ void LIVMapper::handleLIO()
     ROS_INFO("[BIEVR_INTENSITY] scan=%.6f candidates=%d matches=%d applied=%d ratio=%.6g rmse=%.5f info=%.6g weight=%.6g",
              LidarMeasures.last_lio_update_time, q.intensity_candidates, q.intensity_matches, q.intensity_steps,
              q.translation_eigen_ratio, q.intensity_photo_rmse, q.intensity_axis_information, q.intensity_applied_weight);
+  if (fout_bievr_multiscale.is_open() && !bootstrap_bievr)
+  {
+    const auto &d = q.adaptive;
+    fout_bievr_multiscale << std::fixed << std::setprecision(6) << LidarMeasures.last_lio_update_time << ","
+                         << d.candidates << "," << d.base_valid << "," << d.predicted_valid << "," << q.eff
+                         << "," << d.weak_rank << "," << std::scientific << d.base_min_eigenvalue
+                         << "," << d.base_eigen_ratio << "," << d.base_weak_information << "," << d.selected_weak_information
+                         << "," << d.evaluated_voxels << "," << d.coarse_voxels << "," << d.switched_voxels
+                         << "," << d.coarse_payload_bytes << "," << d.proposed_coarse_voxels << "," << d.proposed_coarse_payload_bytes
+                         << "," << d.sparse_candidates << "," << d.sparse_base_valid << "," << d.sparse_selected_valid
+                         << "," << q.adaptive_fallback << "," << lio_ok << ","
+                         << voxelmap_manager->config_setting_.bievr_adaptive_.rotation_reference_m;
+    for (std::size_t i = 1; i < d.base_eigenvalues.size(); ++i) fout_bievr_multiscale << "," << d.base_eigenvalues[i];
+    fout_bievr_multiscale << "\n";
+  }
 
   double t2 = omp_get_wtime();
 

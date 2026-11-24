@@ -1,4 +1,5 @@
 #include "bievr_registration.h"
+#include "bievr_adaptive.h"
 #include "voxel_map.h"
 
 #include <Eigen/Cholesky>
@@ -106,7 +107,8 @@ VoxelMapManager::VoxelMapManager(const VoxelMapConfig &config, const std::unorde
     bievr_registration_ = std::make_unique<fast_livo::BievrRegistration>(
         config.bievr_voxel_size_, config.bievr_pixel_size_, config.bievr_max_voxels_,
         config.bievr_fine_voxel_size_, config.bievr_informed_voxels_, config.bievr_intensity_en_,
-        config.bievr_intensity_sampling_);
+        config.bievr_intensity_sampling_, config.bievr_adaptive_);
+    if (config.bievr_adaptive_.log_diagnostics) config.bievr_adaptive_.validate();
   }
 }
 
@@ -117,13 +119,40 @@ void VoxelMapManager::UpdateBievrMap(const StatesGroup &state)
   bievr_registration_->updateMap(*feats_undistort_, state.rot_end, state.pos_end, extR_, extT_);
 }
 
-bool VoxelMapManager::UpdateBievrState(const StatesGroup &prediction, int min_measurements)
+bool VoxelMapManager::UpdateBievrState(const StatesGroup &prediction, int min_measurements,
+                                       double mean_abs_limit, double rmse_limit)
 {
   lio_quality_ = LioQuality{};
   bievr_effective_points_.clear();
   if (!prediction.cov.allFinite() || !prediction.rot_end.allFinite() || !prediction.pos_end.allFinite()) return false;
 
   bievr_registration_->selectPoints(*feats_undistort_, prediction.rot_end, prediction.pos_end, extR_, extT_);
+  const auto &params = config_setting_.bievr_adaptive_;
+  if (!params.enabled) return SolveBievrState(prediction, min_measurements, false, mean_abs_limit, rmse_limit);
+
+  bievr_registration_->prepareAdaptive(prediction.rot_end, prediction.pos_end, config_setting_.bievr_huber_delta_);
+  const auto &adaptive = bievr_registration_->adaptiveDiagnostics();
+  lio_quality_.adaptive = adaptive;
+  const bool use_coarse = adaptive.coarse_voxels > 0;
+  bool accepted = SolveBievrState(prediction, min_measurements, use_coarse, mean_abs_limit, rmse_limit);
+  if (use_coarse && !accepted)
+  {
+    // A different scale requires a new solve from the original prediction.
+    bievr_registration_->discardAdaptive();
+    lio_quality_ = LioQuality{};
+    lio_quality_.adaptive = bievr_registration_->adaptiveDiagnostics();
+    lio_quality_.adaptive_fallback = true;
+    accepted = SolveBievrState(prediction, min_measurements, false, mean_abs_limit, rmse_limit);
+  }
+  bievr_registration_->finishAdaptive(accepted && lio_quality_.mean_abs_res <= mean_abs_limit &&
+                                      lio_quality_.rmse_res <= rmse_limit);
+  lio_quality_.adaptive = adaptive;
+  return accepted;
+}
+
+bool VoxelMapManager::SolveBievrState(const StatesGroup &prediction, int min_measurements, bool use_adaptive,
+                                      double mean_abs_limit, double rmse_limit)
+{
   const auto &imu_points = bievr_registration_->imuPoints();
   const auto &intensity_points = bievr_registration_->intensityPoints();
   std::vector<BievrLinearization> rows(imu_points.size());
@@ -146,7 +175,8 @@ bool VoxelMapManager::UpdateBievrState(const StatesGroup &prediction, int min_me
       const V3D world_point = estimate.rot_end * point + estimate.pos_end;
       V3D gradient;
       auto &row = rows[i];
-      row.valid = bievr_registration_->sample(world_point, gradient, row.residual);
+      row.valid = use_adaptive ? bievr_registration_->sampleAdaptive(world_point, gradient, row.residual)
+                               : bievr_registration_->sample(world_point, gradient, row.residual);
       if (row.valid)
       {
         row.jacobian.head<3>() = point.cross(world_to_imu * gradient);
@@ -180,7 +210,10 @@ bool VoxelMapManager::UpdateBievrState(const StatesGroup &prediction, int min_me
     q.mean_abs_res = count ? sum_abs / count : 0.0;
     q.rmse_res = count ? std::sqrt(sum_sq / count) : 0.0;
     q.max_abs_res = max_abs;
+    if (iteration == 0 && config_setting_.bievr_adaptive_.log_diagnostics && !config_setting_.bievr_adaptive_.enabled)
+      q.adaptive = fast_livo::bievr::analyzeBievrGeometry(info, imu_points.size(), count, config_setting_.bievr_adaptive_);
     if (count < std::max(1, min_measurements) || !info.allFinite() || !rhs.allFinite()) return false;
+    if (use_adaptive && count < 0.8 * std::min(q.adaptive.base_valid, q.adaptive.predicted_valid)) return false;
 
     const Eigen::SelfAdjointEigenSolver<PoseMatrix> eigensolver(info);
     if (eigensolver.info() != Eigen::Success) return false;
@@ -311,6 +344,7 @@ bool VoxelMapManager::UpdateBievrState(const StatesGroup &prediction, int min_me
     if (last_rotation_step.norm() < DEG2RAD(0.01) && step.segment<3>(3).norm() < 0.00015 && ++convergence_count == 2) break;
   }
 
+  if (use_adaptive && !(lio_quality_.mean_abs_res <= mean_abs_limit && lio_quality_.rmse_res <= rmse_limit)) return false;
   StateMatrix transport = StateMatrix::Identity();
   transport.topLeftCorner<3, 3>() = rightJacobian(last_rotation_step);
   const StateMatrix covariance = transport * posterior_factor.solve(StateMatrix::Identity()) * transport.transpose();

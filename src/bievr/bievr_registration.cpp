@@ -1,5 +1,6 @@
 #include "bievr_registration.h"
 
+#include "bievr_adaptive.h"
 #include "bievr_intensity_map.h"
 #include "bievr_voxel_map.h"
 
@@ -39,19 +40,26 @@ bievr::BievrVoxelMap::Parameters mapParameters(double voxel_size, double pixel_s
 struct BievrRegistration::Impl
 {
   Impl(double voxel_size, double pixel_size, int max_voxels, double fine_voxel_size, int informed_voxels,
-       bool use_intensity, bool use_intensity_sampling)
+       bool use_intensity, bool use_intensity_sampling, const bievr::BievrAdaptiveParams& adaptive_parameters)
       : map(mapParameters(voxel_size, pixel_size, max_voxels, use_intensity)),
         inverse_voxel_size(1.0 / voxel_size), intensity_enabled(use_intensity),
         intensity_sampling(use_intensity_sampling)
   {
     if (!validSize(fine_voxel_size) || informed_voxels < 0)
       throw std::invalid_argument("Invalid BIEVR scan sampling parameters");
+    if (adaptive_parameters.enabled)
+    {
+      if (!(adaptive_parameters.coarse_pixel_size_m > pixel_size))
+        throw std::invalid_argument("BIEVR adaptive coarse pixels must be larger than base pixels");
+      adaptive = std::make_unique<bievr::BievrAdaptivePolicy>(adaptive_parameters);
+    }
 
     sampling.fine_voxel_size_ = fine_voxel_size;
     sampling.informed_voxel_count_ = static_cast<std::size_t>(informed_voxels);
   }
 
   bievr::BievrVoxelMap map;
+  std::unique_ptr<bievr::BievrAdaptivePolicy> adaptive;
   const double inverse_voxel_size;
   const bool intensity_enabled;
   const bool intensity_sampling;
@@ -69,9 +77,10 @@ struct BievrRegistration::Impl
 };
 
 BievrRegistration::BievrRegistration(double voxel_size, double pixel_size, int max_voxels, double fine_voxel_size,
-                                     int informed_voxels, bool intensity_enabled, bool intensity_sampling)
+                                     int informed_voxels, bool intensity_enabled, bool intensity_sampling,
+                                     const bievr::BievrAdaptiveParams& adaptive)
     : impl_(std::make_unique<Impl>(voxel_size, pixel_size, max_voxels, fine_voxel_size, informed_voxels,
-                                  intensity_enabled, intensity_sampling))
+                                  intensity_enabled, intensity_sampling, adaptive))
 {
 }
 
@@ -233,5 +242,36 @@ bool BievrRegistration::sampleIntensity(std::size_t index, const V3D& world_poin
   gradient = measurement.position_jacobian_.transpose();
   residual = measurement.residual_;
   return gradient.allFinite() && std::isfinite(residual);
+}
+
+bool BievrRegistration::sampleAdaptive(const V3D& world_point, V3D& gradient, double& residual) const
+{
+  bievr::BievrMeasurement measurement;
+  if (!impl_->adaptive->sample(impl_->map, world_point, measurement)) return false;
+  gradient = measurement.position_jacobian_.transpose();
+  residual = measurement.residual_;
+  return gradient.allFinite() && std::isfinite(residual);
+}
+
+void BievrRegistration::prepareAdaptive(const M3D& world_rotation, const V3D& world_position, double huber_delta)
+{
+  impl_->arena.execute([&] {
+    impl_->adaptive->prepare(impl_->map, impl_->imu_points, world_rotation, world_position, huber_delta);
+  });
+}
+
+const bievr::BievrAdaptiveDiagnostics& BievrRegistration::adaptiveDiagnostics() const
+{
+  return impl_->adaptive->diagnostics();
+}
+
+void BievrRegistration::discardAdaptive()
+{
+  impl_->adaptive->useBase();
+}
+
+void BievrRegistration::finishAdaptive(bool accepted)
+{
+  impl_->adaptive->finishFrame(accepted);
 }
 } // namespace fast_livo

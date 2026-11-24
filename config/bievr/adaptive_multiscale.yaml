@@ -1,0 +1,12 @@
+# Geometry-only scale selection. Launch arguments set the mode and pixel sizes.
+rotation_reference_m: 5.0
+min_effective_points: 100
+degeneracy_ratio: 0.02
+min_valid_ratio: 0.30
+switch_margin: 0.15
+min_hold_frames: 3
+max_coarse_voxels: 64
+min_voxel_points: 6
+max_residual_m: 0.12
+max_rmse_ratio: 1.10
+coarse_cost_ratio: 1.0

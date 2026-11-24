@@ -207,6 +207,7 @@ public:
   double th_cond_max_     = 1e10;
   bool   lio_quality_log_en_ = false;   // dump per-frame LIO quality to Log/lio_quality.csv
   ofstream fout_lioq;
+  ofstream fout_bievr_multiscale;
 
   // VIO quality thresholds
   int    vio_tracked_min_   = 60;     // tracked features/patches

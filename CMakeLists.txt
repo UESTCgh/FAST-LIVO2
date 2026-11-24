@@ -132,7 +132,7 @@ include_directories(
 # Add libraries
 add_library(vio src/vio.cpp src/frame.cpp src/visual_point.cpp)
 add_library(lio src/voxel_map.cpp src/bievr/bievr_registration.cpp src/bievr/bievr_update.cpp
-  src/bievr/bievr_intensity_map.cpp)
+  src/bievr/bievr_intensity_map.cpp src/bievr/bievr_adaptive.cpp)
 target_link_libraries(lio PRIVATE TBB::tbb)
 add_library(pre src/preprocess.cpp)
 add_library(imu_proc src/IMU_Processing.cpp)
@@ -163,6 +163,18 @@ if(mimalloc_FOUND)
 endif()
 
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(bievr_multiscale_map_test test/bievr_multiscale_map_test.cpp)
+  if(TARGET bievr_multiscale_map_test)
+    target_link_libraries(bievr_multiscale_map_test TBB::tbb)
+  endif()
+  catkin_add_gtest(bievr_adaptive_policy_test test/bievr_adaptive_policy_test.cpp)
+  if(TARGET bievr_adaptive_policy_test)
+    target_link_libraries(bievr_adaptive_policy_test lio TBB::tbb
+      ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} ${Sophus_LIBRARIES})
+    if(OpenMP_CXX_FOUND)
+      target_link_libraries(bievr_adaptive_policy_test OpenMP::OpenMP_CXX)
+    endif()
+  endif()
   catkin_add_gtest(camera_observation_queue_test
     test/camera_observation_queue_test.cpp src/multi_camera/camera_observation_queue.cpp)
   if(TARGET camera_observation_queue_test)

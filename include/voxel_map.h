@@ -13,6 +13,7 @@ which is included as part of this source code package.
 #ifndef VOXEL_MAP_H_
 #define VOXEL_MAP_H_
 
+#include "bievr_adaptive_config.h"
 #include "common_lib.h"
 #include <Eigen/Dense>
 #include <fstream>
@@ -59,6 +60,8 @@ struct LioQuality {
   double intensity_photo_rmse = 0.0;
   double intensity_axis_information = 0.0;
   double intensity_applied_weight = 0.0;
+  fast_livo::bievr::BievrAdaptiveDiagnostics adaptive;
+  bool adaptive_fallback = false;
 };
 
 typedef struct VoxelMapConfig
@@ -93,6 +96,7 @@ typedef struct VoxelMapConfig
   double bievr_intensity_weight_ = 1.0;
   double bievr_intensity_weak_ratio_ = 0.15;
   int bievr_intensity_min_matches_ = 80;
+  fast_livo::bievr::BievrAdaptiveParams bievr_adaptive_;
 } VoxelMapConfig;
 
 typedef struct PointToPlane
@@ -268,7 +272,7 @@ public:
   ~VoxelMapManager();
 
   void StateEstimation(StatesGroup &state_propagat);
-  bool UpdateBievrState(const StatesGroup &state_propagat, int min_measurements);
+  bool UpdateBievrState(const StatesGroup &state_propagat, int min_measurements, double mean_abs_limit, double rmse_limit);
   void UpdateBievrMap(const StatesGroup &state);
   void BuildVisualSupport(const StatesGroup &state, std::vector<pointWithVar> &points, bool assign_normals) const;
   PointCloudXYZI EffectiveWorldPoints() const;
@@ -291,6 +295,8 @@ public:
   void clearMemOutOfMap(const int& x_max,const int& x_min,const int& y_max,const int& y_min,const int& z_max,const int& z_min );
 
 private:
+  bool SolveBievrState(const StatesGroup &prediction, int min_measurements, bool use_adaptive,
+                       double mean_abs_limit, double rmse_limit);
   std::unique_ptr<fast_livo::BievrRegistration> bievr_registration_;
   std::vector<V3D> bievr_effective_points_;
   void GetUpdatePlane(const VoxelOctoTree *current_octo, const int pub_max_voxel_layer, std::vector<VoxelPlane> &plane_list);

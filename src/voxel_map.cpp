@@ -71,6 +71,24 @@ void loadVoxelConfig(ros::NodeHandle &nh, VoxelMapConfig &voxel_config)
     nh.param<double>("lio/bievr/intensity/weight", voxel_config.bievr_intensity_weight_, 1.0);
     nh.param<double>("lio/bievr/intensity/weak_eigen_ratio", voxel_config.bievr_intensity_weak_ratio_, 0.15);
     nh.param<int>("lio/bievr/intensity/min_matches", voxel_config.bievr_intensity_min_matches_, 80);
+
+    ros::NodeHandle multiscale_nh(nh, "lio/bievr/adaptive_multiscale");
+    auto &adaptive = voxel_config.bievr_adaptive_;
+    multiscale_nh.param("enabled", adaptive.enabled, adaptive.enabled);
+    multiscale_nh.param("density_only", adaptive.density_only, adaptive.density_only);
+    multiscale_nh.param("log_diagnostics", adaptive.log_diagnostics, adaptive.log_diagnostics);
+    multiscale_nh.param("coarse_pixel_size_m", adaptive.coarse_pixel_size_m, adaptive.coarse_pixel_size_m);
+    multiscale_nh.param("rotation_reference_m", adaptive.rotation_reference_m, adaptive.rotation_reference_m);
+    multiscale_nh.param("min_effective_points", adaptive.min_effective_points, adaptive.min_effective_points);
+    multiscale_nh.param("degeneracy_ratio", adaptive.degeneracy_ratio, adaptive.degeneracy_ratio);
+    multiscale_nh.param("min_valid_ratio", adaptive.min_valid_ratio, adaptive.min_valid_ratio);
+    multiscale_nh.param("switch_margin", adaptive.switch_margin, adaptive.switch_margin);
+    multiscale_nh.param("min_hold_frames", adaptive.min_hold_frames, adaptive.min_hold_frames);
+    multiscale_nh.param("max_coarse_voxels", adaptive.max_coarse_voxels, adaptive.max_coarse_voxels);
+    multiscale_nh.param("min_voxel_points", adaptive.min_voxel_points, adaptive.min_voxel_points);
+    multiscale_nh.param("max_residual_m", adaptive.max_residual_m, adaptive.max_residual_m);
+    multiscale_nh.param("max_rmse_ratio", adaptive.max_rmse_ratio, adaptive.max_rmse_ratio);
+    multiscale_nh.param("coarse_cost_ratio", adaptive.coarse_cost_ratio, adaptive.coarse_cost_ratio);
   }
 }
 

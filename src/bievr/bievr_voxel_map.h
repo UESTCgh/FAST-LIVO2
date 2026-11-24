@@ -127,6 +127,24 @@ struct BievrMeasurement
     double residual_ = 0.0;
 };
 
+// Derived from a voxel's unsmoothed Base observations. Its lifetime is one
+// registration scan, during which the voxel frame and observations are fixed.
+struct BievrBumpLevel
+{
+    double pixel_size = 0.0;
+    Eigen::MatrixXf mean_height;
+    Eigen::MatrixXf smoothed_height;
+    Eigen::MatrixXd effective_weight;
+    Eigen::MatrixXd height_variance;
+    Eigen::MatrixXi support_count; // Number of contributing Base pixels, not LiDAR returns.
+    std::size_t observed_pixels = 0;
+
+    [[nodiscard]] double coverage() const noexcept
+    {
+        return effective_weight.size() ? static_cast<double>(observed_pixels) / effective_weight.size() : 0.0;
+    }
+};
+
 class BievrVoxelMap
 {
 public:
@@ -243,26 +261,33 @@ public:
         return &iterator->second.voxel_;
     }
 
+    // The caller validates indexing bounds with canIndex before querying.
+    [[nodiscard]] const BievrVoxel *queryVoxel(const Eigen::Vector3d &point_world, BievrVoxelKey *matched_key = nullptr) const
+    {
+        const BievrVoxelKey key = pointToKey(point_world);
+        const BievrVoxel *voxel = findVoxel(key);
+        if (!voxel) return findNearestVoxel(point_world, matched_key);
+        if (matched_key) *matched_key = key;
+        return voxel;
+    }
+
     [[nodiscard]] bool sample(const Eigen::Vector3d &_point_world,
                               BievrMeasurement &_measurement) const
     {
-        const BievrVoxel *voxel = findVoxel(pointToKey(_point_world));
-        if (voxel == nullptr)
-        {
-            voxel = findNearestVoxel(_point_world);
-            if (voxel == nullptr)
-            {
-                return false;
-            }
-        }
+        const BievrVoxel *voxel = queryVoxel(_point_world);
+        return voxel && sampleBase(*voxel, _point_world, _measurement);
+    }
 
-        const Eigen::Vector3d point_cell = voxel->cell_from_world_ * _point_world;
+    [[nodiscard]] bool sampleBase(const BievrVoxel &voxel, const Eigen::Vector3d &_point_world,
+                                  BievrMeasurement &_measurement) const
+    {
+        const Eigen::Vector3d point_cell = voxel.cell_from_world_ * _point_world;
         const double x = point_cell.x() * inverse_pixel_size_;
         const double y = point_cell.y() * inverse_pixel_size_;
         double image_value = 0.0;
         double gradient_x = 0.0;
         double gradient_y = 0.0;
-        if (!sampleValueAndGradient(*voxel, x, y, image_value, gradient_x, gradient_y))
+        if (!sampleValueAndGradient(voxel, x, y, image_value, gradient_x, gradient_y))
         {
             return false;
         }
@@ -271,9 +296,95 @@ public:
         local_jacobian << -gradient_x * inverse_pixel_size_,
             -gradient_y * inverse_pixel_size_,
             1.0;
-        _measurement.position_jacobian_.noalias() = local_jacobian * voxel->cell_from_world_.linear();
+        _measurement.position_jacobian_.noalias() = local_jacobian * voxel.cell_from_world_.linear();
         _measurement.residual_ = point_cell.z() - image_value;
         return true;
+    }
+
+    [[nodiscard]] bool buildCoarse(const BievrVoxel &voxel, double pixel_size, BievrBumpLevel &level) const
+    {
+        level = BievrBumpLevel{};
+        if (!voxel.observed_ || !(pixel_size > parameters_.pixel_size_) || !std::isfinite(pixel_size) ||
+            voxel.bump_image_.size() == 0) return false;
+
+        const double ratio = parameters_.pixel_size_ / pixel_size;
+        const Eigen::Index height = static_cast<Eigen::Index>(std::ceil((voxel.bump_image_.rows() - 1) * ratio)) + 1;
+        const Eigen::Index width = static_cast<Eigen::Index>(std::ceil((voxel.bump_image_.cols() - 1) * ratio)) + 1;
+        if (width < 2 || height < 2) return false;
+
+        level.pixel_size = pixel_size;
+        level.effective_weight.setZero(height, width);
+        level.height_variance.setZero(height, width);
+        level.support_count.setZero(height, width);
+        Eigen::MatrixXd mean = Eigen::MatrixXd::Zero(height, width);
+        for (Eigen::Index column = 0; column < voxel.bump_image_.cols(); ++column)
+        {
+            // Both lattices begin at the same cell-frame origin. A measured Base
+            // pixel contributes once to the nearest Coarse pixel in that frame.
+            const Eigen::Index coarse_column = static_cast<Eigen::Index>(std::round(column * ratio));
+            for (Eigen::Index row = 0; row < voxel.bump_image_.rows(); ++row)
+            {
+                const double base_weight = voxel.bump_weights_(row, column);
+                const double base_height = voxel.bump_image_(row, column);
+                if (!(base_weight > 0.0) || !std::isfinite(base_weight) || !std::isfinite(base_height)) continue;
+
+                const Eigen::Index coarse_row = static_cast<Eigen::Index>(std::round(row * ratio));
+                double &weight = level.effective_weight(coarse_row, coarse_column);
+                double &height_mean = mean(coarse_row, coarse_column);
+                int &count = level.support_count(coarse_row, coarse_column);
+                if (count == 0) ++level.observed_pixels;
+                ++count;
+                weight += base_weight;
+                const double difference = base_height - height_mean;
+                height_mean += (base_weight / weight) * difference;
+                level.height_variance(coarse_row, coarse_column) += base_weight * difference * (base_height - height_mean);
+            }
+        }
+        if (level.observed_pixels == 0)
+        {
+            level = BievrBumpLevel{};
+            return false;
+        }
+        for (Eigen::Index column = 0; column < width; ++column)
+        {
+            for (Eigen::Index row = 0; row < height; ++row)
+            {
+                const double weight = level.effective_weight(row, column);
+                if (weight > 0.0)
+                    level.height_variance(row, column) = std::max(0.0, level.height_variance(row, column) / weight);
+            }
+        }
+        level.mean_height = mean.cast<float>();
+        if (parameters_.smooth_image_)
+            smoothCoarse(level);
+        else
+            level.smoothed_height = level.mean_height;
+        return true;
+    }
+
+    [[nodiscard]] bool sampleCoarse(const BievrVoxel &voxel, const BievrBumpLevel &level,
+                                    const Eigen::Vector3d &point_world, BievrMeasurement &measurement) const
+    {
+        if (!(level.pixel_size > 0.0) || !std::isfinite(level.pixel_size) || level.observed_pixels == 0 ||
+            level.effective_weight.rows() != level.smoothed_height.rows() ||
+            level.effective_weight.cols() != level.smoothed_height.cols()) return false;
+        const Eigen::Vector3d point_cell = voxel.cell_from_world_ * point_world;
+        const double inverse_scale = 1.0 / level.pixel_size;
+        const double x = point_cell.x() * inverse_scale;
+        const double y = point_cell.y() * inverse_scale;
+        if (!point_cell.allFinite() || !(x >= 0.0 && x < level.smoothed_height.cols() - 1 &&
+                                       y >= 0.0 && y < level.smoothed_height.rows() - 1) ||
+            point_cell.x() > (voxel.bump_image_.cols() - 1) * parameters_.pixel_size_ ||
+            point_cell.y() > (voxel.bump_image_.rows() - 1) * parameters_.pixel_size_) return false;
+
+        double height, gradient_x, gradient_y;
+        if (!sampleValueAndGradient(level.smoothed_height, level.effective_weight, x, y,
+                                    height, gradient_x, gradient_y, true)) return false;
+
+        const Eigen::RowVector3d local_jacobian(-gradient_x * inverse_scale, -gradient_y * inverse_scale, 1.0);
+        measurement.position_jacobian_.noalias() = local_jacobian * voxel.cell_from_world_.linear();
+        measurement.residual_ = point_cell.z() - height;
+        return measurement.position_jacobian_.allFinite() && std::isfinite(measurement.residual_);
     }
 
     [[nodiscard]] bool sampleIntensity(const Eigen::Vector3d &point_world, float scan_intensity,
@@ -677,7 +788,7 @@ private:
 
     using VoxelMap = std::unordered_map<BievrVoxelKey, VoxelEntry, BievrVoxelKeyHash>;
 
-    [[nodiscard]] const BievrVoxel *findNearestVoxel(const Eigen::Vector3d &_point) const
+    [[nodiscard]] const BievrVoxel *findNearestVoxel(const Eigen::Vector3d &_point, BievrVoxelKey *matched_key = nullptr) const
     {
         const BievrVoxel *nearest_voxel = nullptr;
         double minimum_squared_distance = std::numeric_limits<double>::max();
@@ -704,6 +815,7 @@ private:
             {
                 minimum_squared_distance = squared_distance;
                 nearest_voxel = voxel;
+                if (matched_key) *matched_key = key;
             }
         }
         return nearest_voxel;
@@ -956,6 +1068,33 @@ private:
         }
     }
 
+    void smoothCoarse(BievrBumpLevel &level) const
+    {
+        const auto &weights = level.effective_weight;
+        level.smoothed_height.setZero(weights.rows(), weights.cols());
+        for (Eigen::Index column = 0; column < weights.cols(); ++column)
+        {
+            for (Eigen::Index row = 0; row < weights.rows(); ++row)
+            {
+                if (!(weights(row, column) > 0.0)) continue;
+                double sum_height = 0.0, sum_weight = 0.0;
+                for (auto source_column = std::max<Eigen::Index>(0, column - 1);
+                     source_column < std::min(weights.cols(), column + 2); ++source_column)
+                {
+                    for (auto source_row = std::max<Eigen::Index>(0, row - 1);
+                         source_row < std::min(weights.rows(), row + 2); ++source_row)
+                    {
+                        const double weight = weights(source_row, source_column) *
+                            gaussian_kernel_(source_row - row + 1, source_column - column + 1);
+                        sum_height += weight * level.mean_height(source_row, source_column);
+                        sum_weight += weight;
+                    }
+                }
+                level.smoothed_height(row, column) = static_cast<float>(sum_height / sum_weight);
+            }
+        }
+    }
+
     void updateImageScore(BievrVoxel &_voxel) const
     {
         std::size_t observed_pixel_count = 0U;
@@ -1049,8 +1188,9 @@ private:
         return true;
     }
 
+    template <typename WeightMatrix>
     [[nodiscard]] static bool interpolateValue(const Eigen::MatrixXf &image,
-                                               const Eigen::MatrixXf &image_weights,
+                                               const WeightMatrix &image_weights,
                                                const double _x,
                                                const double _y,
                                                double &_value)
@@ -1094,8 +1234,9 @@ private:
                                       _x, _y, _value, _gradient_x, _gradient_y);
     }
 
+    template <typename WeightMatrix>
     [[nodiscard]] static bool sampleValueAndGradient(const Eigen::MatrixXf &image,
-                                                     const Eigen::MatrixXf &image_weights,
+                                                     const WeightMatrix &image_weights,
                                                      double _x, double _y, double &_value,
                                                      double &_gradient_x, double &_gradient_y,
                                                      bool require_gradient_support = false)
