@@ -8,6 +8,9 @@ recorded with a total station only observe the position of a prism, so an option
 The two trajectories are associated in time by linearly interpolating the higher-rate one at the
 stamps of the lower-rate one, aligned with a rigid SE(3) Umeyama fit (no scale) and compared by
 their position error.
+
+The command-line default follows the COIN-BIEVR Shield3/4 reproduction: fit one constant time
+offset per trajectory and use a zero lever arm. Pass --time-offset 0 for the raw-timestamp result.
 """
 import argparse
 import json
@@ -173,8 +176,9 @@ def main():
                         help="position of the tracked point (prism) in the IMU frame [m]")
     parser.add_argument("--max-gap", type=float, default=1.0,
                         help="do not interpolate across gaps larger than this [s]")
-    parser.add_argument("--time-offset", default="0.0",
-                        help="offset added to the estimate stamps [s], or 'auto' to estimate it")
+    parser.add_argument("--time-offset", default="auto",
+                        help="offset added to the estimate stamps [s] "
+                             "(default: 'auto' to minimize ATE; use 0 for raw timestamps)")
     parser.add_argument("--plot", default=None, help="save a top-down/error plot to this file")
     parser.add_argument("--json", action="store_true", help="print the result as JSON")
     args = parser.parse_args()

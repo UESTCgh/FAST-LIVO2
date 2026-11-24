@@ -1,64 +1,60 @@
-# GEODE Shield4 ATE 复测
+# GEODE Shield3 / Shield4 ATE 复测
 
-ETH 原版 [BIEVR-LIO](https://github.com/ethz-asl/BIEVR-LIO) 的本地源码在
-`/home/gh/catkin_ws/src/BIEVR-LIO`。这次使用提交 `2306022` 的原版算法，
-通过 ROS1 `bievr_lio_ros/process_bag` 读取完整 Shield4 bag，使用发布的 Gamma
-传感器配置。此处的评估脚本来自
-[COIN-BIEVR-unofficial](https://github.com/qiyu-lu/COIN-BIEVR-unofficial/blob/22e87bcea372cd699c48c1461b222cc6ea9a8c00/scripts/evaluate_ate.py)，
-保留原脚本与 [BSD-3-Clause 许可](LICENSE-COIN-BIEVR)。
+本目录默认采用本地 ETH COIN-BIEVR `c26f92d` 的 Shield3 / Shield4 复现口径。评估器源自 [COIN-BIEVR-unofficial](https://github.com/qiyu-lu/COIN-BIEVR-unofficial/blob/22e87bcea372cd699c48c1461b222cc6ea9a8c00/scripts/evaluate_ate.py)，保留其 [BSD-3-Clause 许可](LICENSE-COIN-BIEVR)。[算法复现和运行参数](/home/gh/catkin_ws/reproduction/coin_bievr/official/README.md)
 
-## 计算 ATE
+## 运行评估
 
-在 FAST-LIVO2 仓库根目录运行。需要 Python 3 和 NumPy，绘图时另需 Matplotlib。
-以下 `estimate` 指向已经跑完的 ETH 原版轨迹，也可换成自己的 FAST-LIVO2 TUM 轨迹。
+在 FAST-LIVO2 仓库根目录运行。需要 Python 3 和 NumPy，绘图时还需要 Matplotlib。将 `estimate` 换成需要评估的 FAST-LIVO2 TUM 轨迹，`shield` 选择对应的真值序列。
 
 ```bash
-truth="$HOME/data/GEODE/groundtruth/traj/metro_tunnel/Shield_tunnel4.txt"
-estimate="$HOME/fastlivo2_ws/eval_results/shield4_gamma_bievr/official_reproduction.8c1S8T/trajectory.txt"
+shield=4  # 3 或 4
+truth="$HOME/data/GEODE/groundtruth/traj/metro_tunnel/Shield_tunnel${shield}.txt"
+estimate="$HOME/catkin_ws/reproduction/coin_bievr/official/shield-tunnel${shield}-gamma/traj.txt"
 
-python3 result_check/evaluate_ate.py "$estimate" "$truth" --time-offset 0 --json
-python3 result_check/evaluate_ate.py "$estimate" "$truth" --time-offset auto --json
+# 主结果，默认等价于 --time-offset auto
+python3 result_check/evaluate_ate.py "$estimate" "$truth" --json --plot ate.png > eval.json
+
+# 原始时间戳对照
+python3 result_check/evaluate_ate.py "$estimate" "$truth" --time-offset 0 --json > eval-zero-offset.json
 ```
 
-轨迹用 TUM 格式 `t x y z qx qy qz qw`，时间单位为秒。评估将高频轨迹线性插值
-到低频轨迹的时间戳，然后做无尺度 SE(3) 刚体对齐，计算位置 RMSE。
-`--time-offset auto` 为**每条估计轨迹**搜索一个加到估计时间戳上的常数，
-以位置 ATE RMSE 最小为准。轨迹文件保持原样。本次采用 COIN-BIEVR 的 GEODE
-参数，不传 `--lever-arm`。
+- 用 TUM 格式 `t x y z qx qy qz qw` 读取估计轨迹和全站仪位置真值。Shield3 / Shield4 在真值时刻线性插值估计位置，只使用有效重叠区间，最大插值间隔为 1 秒。
+- 对每条估计轨迹搜索一个**加到估计时间戳**的常量，以全程三维位置 ATE RMSE 最小为准。搜索对每个候选时移执行无尺度 SE(3) 刚体对齐。匹配点数可能随时移变化，比较结果时一并记录 `time_offset` 和 `n_pairs`。
+- 复现口径的 IMU 到棱镜杆臂取零，命令省略 `--lever-arm`。时移只应用在评估读取的轨迹副本中。
 
-| ETH 原版 Shield4 | ATE RMSE | 真值匹配数 | 加到估计时间戳的时移 |
-|---|---:|---:|---:|
-| 原始时间戳 | 1.860956 m | 901 | 0 s |
-| COIN-BIEVR 自动拟合 | 0.489681 m | 907 | −1.148 s |
+## 核对结果
 
-**0.490 m 对应上表的自动拟合。** 这一列依赖每条轨迹拟合的时移，比较方法时也可用
-固定秒数（例如 `--time-offset=-1.20`），并检查匹配数和共同真值区间。
-[ETH 论文 Table IV](https://arxiv.org/html/2604.14421v2#S4.T4) 的 0.275 m
-来自论文实验。
+下表使用本地 ETH COIN-BIEVR 官方版复现保存的轨迹。原始时间戳列保留同一评估器、杆臂和空间对齐设置，时移设为零。
 
-## 从原始 bag 重跑 ETH 轨迹
+| 序列 | 输出位姿 | 自动拟合时移 | 自动拟合匹配数 | 自动拟合 ATE RMSE | 零时移匹配数 | 零时移 ATE RMSE |
+|---|---:|---:|---:|---:|---:|---:|
+| Shield3 | 3,386 | −0.717 s | 919 / 919 | 0.181 m | 919 / 919 | 1.175 m |
+| Shield4 | 3,402 | −1.238 s | 907 / 911 | 0.171 m | 901 / 911 | 1.944 m |
 
-需要已经编译好的 ROS Noetic 原版工作区。下面使用独立 ROS master 端口，
-在临时目录写轨迹和运行日志。
+[Shield3 指标](/home/gh/catkin_ws/reproduction/coin_bievr/official/shield-tunnel3-gamma/eval.json) · [Shield4 指标](/home/gh/catkin_ws/reproduction/coin_bievr/official/shield-tunnel4-gamma/eval.json) · [论文 Table I](https://icra2026-rigorous-perception.github.io/pdf/pfreundschuh2026.pdf#page=3)
+
+## 从原始 bag 生成 ETH COIN-BIEVR 轨迹
+
+需要已编译的 ROS Noetic 官方 COIN-BIEVR 工作区。下列命令使用已保存的 Gamma 配置和默认强度参数，在新目录保存轨迹与日志。运行完毕后，将评估命令的 `estimate` 指向新轨迹。
 
 ```bash
 source /opt/ros/noetic/setup.bash
-source "$HOME/catkin_ws/devel/setup.bash"
-eth="$HOME/catkin_ws/src/BIEVR-LIO"
-bag="$HOME/data/GEODE/sensor_data/metro_tunnel/Shield_tunnel4_gamma.bag"
-run_dir=$(mktemp -d /tmp/bievr-shield4.XXXXXX)
-estimate="$run_dir/trajectory.txt"
+source "$HOME/.local/share/coin_bievr/official_ws/devel/setup.bash"
 
-sed -E \
-  -e 's/^  dashboard: True/  dashboard: False/' \
-  -e "s@^  trajectory_path:.*@  trajectory_path: \"$estimate\"@" \
-  "$eth/config/params.yaml" > "$run_dir/params.yaml"
+shield=4  # 3 或 4
+saved="$HOME/catkin_ws/reproduction/coin_bievr/official/shield-tunnel${shield}-gamma"
+bag="$HOME/data/GEODE/sensor_data/metro_tunnel/Shield_tunnel${shield}_gamma.bag"
+run_dir=$(mktemp -d /tmp/coin-bievr-shield.XXXXXX)
+estimate="$run_dir/traj.txt"
 
-ROS_MASTER_URI=http://127.0.0.1:11321 ROS_LOG_DIR="$run_dir/ros" \
-  roslaunch -p 11321 "$eth/interfaces/ros1/launch/process_bag.launch" \
-    sensor_config:="$eth/config/sensor_configs/gamma.yaml" \
-    params:="$run_dir/params.yaml" rosbag:="$bag" rviz:=false
+sed -E "s@^  trajectory_path:.*@  trajectory_path: \"$estimate\"@" \
+  "$saved/params.yaml" > "$run_dir/params.yaml"
+
+port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+ROS_MASTER_URI="http://127.0.0.1:$port" ROS_LOG_DIR="$run_dir/ros" \
+  roslaunch -p "$port" coin_bievr_ros process_bag.launch \
+    "sensor_config:=$saved/gamma.yaml" "params:=$run_dir/params.yaml" "rosbag:=$bag" \
+    > "$run_dir/run.log" 2>&1
 ```
 
-完整回放输出 3,402 个位姿。随后用上节的 `evaluate_ate.py` 命令评估
-`$estimate`。
+此前 ETH BIEVR-LIO `2306022` 的纯几何复测记录另有归档。[历史复测](/home/gh/fastlivo2_ws/eval_results/shield4_gamma_bievr/official_reproduction.8c1S8T/README.md)
